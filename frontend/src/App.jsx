@@ -9,6 +9,7 @@ import Inventory from './pages/sections/Inventory';
 import Buybox from './pages/sections/Buybox';
 import Marketing from './pages/sections/Marketing';
 import ProductDetails from './pages/sections/ProductDetails';
+import Profile from './pages/sections/Profile';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="buybox" element={<Buybox />} />
         <Route path="marketing" element={<Marketing />} />
         <Route path="product-details" element={<ProductDetails />} />
+        <Route path="profile" element={<Profile />} />
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

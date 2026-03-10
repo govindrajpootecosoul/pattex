@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { dashboardApi } from '../../api/api';
+import Pagination from '../../components/Pagination';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -6,113 +8,6 @@ const DATE_FILTER_OPTIONS = [
   { id: 'PREVIOUS_MONTH', label: 'Previous Month' },
   { id: 'CURRENT_YEAR', label: 'Current Year' },
   { id: 'PREVIOUS_YEAR', label: 'Previous Year' },
-];
-
-const BUYBOX_ROWS = [
-  {
-    id: 1,
-    asin: 'B0BBX001',
-    productName: 'Pattex Super Glue 3g',
-    productCategory: 'Adhesives',
-    packSize: 'Single',
-    channel: 'VC',
-    availableInventory: 320,
-    last30DaysSales: 140,
-    dos: 32,
-    moq: 50,
-    idealVcPrice: 24.5,
-    idealScPrice: 25.5,
-    hasBuybox: true,
-    currentBuyboxOwner: 'Pattex',
-    currentBuyboxPrice: 24.9,
-    currentVcPrice: 24.9,
-    currentScPrice: 26.0,
-    hijacker1: null,
-    hijacker1Price: null,
-    hijacker2: null,
-    hijacker2Price: null,
-    hijacker3: null,
-    hijacker3Price: null,
-    actionRequired: 'Monitor',
-  },
-  {
-    id: 2,
-    asin: 'B0BBX002',
-    productName: 'Pattex Wood Glue 250ml',
-    productCategory: 'Wood Glue',
-    packSize: 'Single',
-    channel: 'SC',
-    availableInventory: 210,
-    last30DaysSales: 95,
-    dos: 45,
-    moq: 40,
-    idealVcPrice: 29.9,
-    idealScPrice: 28.5,
-    hasBuybox: false,
-    currentBuyboxOwner: 'Seller A',
-    currentBuyboxPrice: 27.5,
-    currentVcPrice: 30.0,
-    currentScPrice: 29.5,
-    hijacker1: 'Seller A',
-    hijacker1Price: 27.5,
-    hijacker2: 'Seller B',
-    hijacker2Price: 28.0,
-    hijacker3: null,
-    hijacker3Price: null,
-    actionRequired: 'Price review',
-  },
-  {
-    id: 3,
-    asin: 'B0BBX003',
-    productName: 'Pattex Repair Extreme 20g',
-    productCategory: 'Adhesives',
-    packSize: 'Single',
-    channel: 'VC',
-    availableInventory: 120,
-    last30DaysSales: 210,
-    dos: 18,
-    moq: 30,
-    idealVcPrice: 32.0,
-    idealScPrice: 31.0,
-    hasBuybox: false,
-    currentBuyboxOwner: 'Seller B',
-    currentBuyboxPrice: 29.9,
-    currentVcPrice: 33.0,
-    currentScPrice: 34.5,
-    hijacker1: 'Seller B',
-    hijacker1Price: 29.9,
-    hijacker2: 'Seller C',
-    hijacker2Price: 30.5,
-    hijacker3: 'Seller D',
-    hijacker3Price: 31.0,
-    actionRequired: 'Buybox recovery',
-  },
-  {
-    id: 4,
-    asin: 'B0BBX004',
-    productName: 'Pattex Silicone Sealant 280ml',
-    productCategory: 'Sealants',
-    packSize: 'Single',
-    channel: 'VC',
-    availableInventory: 560,
-    last30DaysSales: 60,
-    dos: 90,
-    moq: 60,
-    idealVcPrice: 19.9,
-    idealScPrice: 20.5,
-    hasBuybox: true,
-    currentBuyboxOwner: 'Pattex',
-    currentBuyboxPrice: 19.9,
-    currentVcPrice: 19.9,
-    currentScPrice: 21.0,
-    hijacker1: null,
-    hijacker1Price: null,
-    hijacker2: null,
-    hijacker2Price: null,
-    hijacker3: null,
-    hijacker3Price: null,
-    actionRequired: 'No action',
-  },
 ];
 
 const STOCK_FILTERS = [
@@ -145,6 +40,9 @@ const getDateRangeForFilter = (dateFilterType) => {
 };
 
 export default function Buybox() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [filters, setFilters] = useState({
     search: '',
     asin: '',
@@ -154,7 +52,8 @@ export default function Buybox() {
     channel: '',
   });
   const [stockFilter, setStockFilter] = useState('ALL_SKUS');
-  const [dateFilterType, setDateFilterType] = useState('');
+  const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
+  const [comparison, setComparison] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState({
     asin: true,
     productName: true,
@@ -177,32 +76,60 @@ export default function Buybox() {
     actionRequired: true,
   });
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  useEffect(() => {
+    setLoading(true);
+    setError('');
+    const params = {};
+    if (dateFilterType) params.dateFilterType = dateFilterType;
+    dashboardApi
+      .getBuybox(params)
+      .then((data) => {
+        const apiRows = Array.isArray(data.rows) ? data.rows : [];
+        setRows(apiRows);
+        setComparison(data?.comparison ?? null);
+      })
+      .catch((e) => {
+        setError(e.message);
+        setComparison(null);
+      })
+      .finally(() => setLoading(false));
+  }, [dateFilterType]);
 
   const asinOptions = useMemo(
-    () => Array.from(new Set(BUYBOX_ROWS.map((r) => r.asin).filter(Boolean))),
-    [],
+    () => Array.from(new Set(rows.map((r) => r.asin).filter(Boolean))),
+    [rows],
   );
   const productNameOptions = useMemo(
-    () => Array.from(new Set(BUYBOX_ROWS.map((r) => r.productName).filter(Boolean))),
-    [],
+    () => Array.from(new Set(rows.map((r) => r.productName).filter(Boolean))),
+    [rows],
   );
   const categoryOptions = useMemo(
-    () => Array.from(new Set(BUYBOX_ROWS.map((r) => r.productCategory).filter(Boolean))),
-    [],
+    () =>
+      Array.from(
+        new Set(
+          rows
+            .map((r) => r.productCategory)
+            .filter(Boolean),
+        ),
+      ),
+    [rows],
   );
   const packSizeOptions = useMemo(
-    () => Array.from(new Set(BUYBOX_ROWS.map((r) => r.packSize).filter(Boolean))),
-    [],
+    () => Array.from(new Set(rows.map((r) => r.packSize).filter(Boolean))),
+    [rows],
   );
   const channelOptions = useMemo(
-    () => Array.from(new Set(BUYBOX_ROWS.map((r) => r.channel).filter(Boolean))),
-    [],
+    () => Array.from(new Set(rows.map((r) => r.salesChannel || r.channel).filter(Boolean))),
+    [rows],
   );
 
   const dateRange = getDateRangeForFilter(dateFilterType);
 
   const filteredRows = useMemo(() => {
-    return BUYBOX_ROWS.filter((row) => {
+    return rows.filter((row) => {
       if (filters.search) {
         const q = filters.search.trim().toLowerCase();
         if (q) {
@@ -224,7 +151,8 @@ export default function Buybox() {
       if (filters.productName && row.productName !== filters.productName) return false;
       if (filters.category && row.productCategory !== filters.category) return false;
       if (filters.packSize && row.packSize !== filters.packSize) return false;
-      if (filters.channel && row.channel !== filters.channel) return false;
+      const channelValue = row.salesChannel || row.channel;
+      if (filters.channel && channelValue !== filters.channel) return false;
 
       if (stockFilter === 'NO_BUYBOX' && row.hasBuybox) return false;
 
@@ -234,7 +162,7 @@ export default function Buybox() {
 
       return true;
     });
-  }, [filters, stockFilter, dateRange]);
+  }, [rows, filters, stockFilter, dateRange]);
 
   const summary = useMemo(() => {
     if (!filteredRows.length) {
@@ -270,7 +198,7 @@ export default function Buybox() {
       channel: '',
     });
     setStockFilter('ALL_SKUS');
-    setDateFilterType('');
+    setDateFilterType('CURRENT_MONTH');
   };
 
   const hasActiveFilters =
@@ -283,6 +211,31 @@ export default function Buybox() {
     stockFilter !== 'ALL_SKUS' ||
     dateFilterType;
 
+  const hasFiltersToClear =
+    (filters.search && filters.search.trim()) ||
+    filters.asin ||
+    filters.productName ||
+    filters.category ||
+    filters.packSize ||
+    filters.channel ||
+    stockFilter !== 'ALL_SKUS' ||
+    dateFilterType !== 'CURRENT_MONTH';
+
+  const kpiTrends = useMemo(() => {
+    const fallback = { value: '—', type: 'neutral' };
+    const fmt = (pct) => {
+      if (pct == null || Number.isNaN(pct)) return '—';
+      const sign = pct >= 0 ? '+' : '';
+      return `${sign}${pct}%`;
+    };
+    const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
+    if (!comparison) return { overallBuyboxPct: fallback, noBuyboxSkus: fallback };
+    return {
+      overallBuyboxPct: { value: fmt(comparison.overallBuyboxPct?.pctChange), type: type(comparison.overallBuyboxPct?.pctChange) },
+      noBuyboxSkus: { value: fmt(comparison.noBuyboxSkus?.pctChange), type: type(comparison.noBuyboxSkus?.pctChange) },
+    };
+  }, [comparison]);
+
   const actionsRecommended = [
     { action: 'Action 1', recommendation: 'Review pricing for SKUs without Buybox', status: 'No action taken' },
     { action: 'Action 2', recommendation: 'Lower VC price to match Buybox', status: 'Accepted' },
@@ -290,29 +243,34 @@ export default function Buybox() {
     { action: 'Action 4', recommendation: 'Increase inventory for high DOS SKUs', status: 'No action required' },
   ];
 
+  if (loading) return <div className="section-muted">Loading...</div>;
+  if (error) return <div className="auth-error">{error}</div>;
+
+  const totalRows = filteredRows.length;
+  const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const startIndex = (safePage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const pagedRows = filteredRows.slice(startIndex, endIndex);
+
   return (
     <>
-      <h2 className="section-title">Buybox Dashboard</h2>
-
       <div className="card inventory-filters-card">
-        <h3>Filters</h3>
         <div className="filter-row filter-row-one">
           <div className="filter-group">
-            <label>Search</label>
             <input
               type="text"
-              placeholder="Search ASIN, name, category…"
+              placeholder="Search (ASIN, name, category…)"
               value={filters.search}
               onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
             />
           </div>
           <div className="filter-group">
-            <label>ASIN</label>
             <select
               value={filters.asin}
               onChange={(e) => setFilters((f) => ({ ...f, asin: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">ASIN</option>
               {asinOptions.map((asin) => (
                 <option key={asin} value={asin}>
                   {asin}
@@ -321,12 +279,11 @@ export default function Buybox() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Product Name</label>
             <select
               value={filters.productName}
               onChange={(e) => setFilters((f) => ({ ...f, productName: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">Product Name</option>
               {productNameOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -335,12 +292,11 @@ export default function Buybox() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Product Category</label>
             <select
               value={filters.category}
               onChange={(e) => setFilters((f) => ({ ...f, category: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">Product Category</option>
               {categoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
@@ -349,12 +305,11 @@ export default function Buybox() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Pack Size</label>
             <select
               value={filters.packSize}
               onChange={(e) => setFilters((f) => ({ ...f, packSize: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">Pack Size</option>
               {packSizeOptions.map((p) => (
                 <option key={p} value={p}>
                   {p}
@@ -363,12 +318,11 @@ export default function Buybox() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Sales Channel</label>
             <select
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">Sales Channel</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -376,32 +330,34 @@ export default function Buybox() {
               ))}
             </select>
           </div>
-          <div className="filter-group">
-            <label>Date</label>
-            <select
-              value={dateFilterType}
-              onChange={handleDateFilterChange}
-              aria-label="Date filter"
-            >
-              {DATE_FILTER_OPTIONS.map((opt) => (
-                <option key={opt.id || 'none'} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          {hasActiveFilters && (
-            <div className="filter-group filter-group-actions">
-              <label>&nbsp;</label>
-              <button
-                type="button"
-                className="btn-clear-filter"
-                onClick={clearAllFilters}
+          <div className="filter-group filter-group-date-with-clear">
+            <div className="filter-date-with-clear">
+              <select
+                value={dateFilterType}
+                onChange={handleDateFilterChange}
+                aria-label="Date filter"
               >
-                Clear all filters
-              </button>
+                {DATE_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.id || 'none'} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {hasFiltersToClear && (
+                <button
+                  type="button"
+                  className="btn-clear-filter btn-clear-filter-icon"
+                  onClick={clearAllFilters}
+                  aria-label="Clear all filters"
+                  title="Clear all filters"
+                >
+                  <svg className="btn-clear-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
             </div>
-          )}
+          </div>
         </div>
       </div>
 
@@ -410,15 +366,28 @@ export default function Buybox() {
         <div className="kpi-grid revenue-kpi-grid">
           <div className="kpi-item kpi-green">
             <div className="label">Overall Buybox %</div>
-            <div className="value">{summary.overallBuyboxPct}%</div>
+            <div className="value value-primary">
+              {summary.overallBuyboxPct}%
+              <span className={`kpi-trend-inline ${kpiTrends.overallBuyboxPct.type === 'negative' ? 'negative' : kpiTrends.overallBuyboxPct.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.overallBuyboxPct.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
           </div>
           <div className="kpi-item kpi-amber">
             <div className="label">No. of SKUs with no Buybox</div>
-            <div className="value">{summary.noBuyboxSkus}</div>
+            <div className="value value-primary">
+              {summary.noBuyboxSkus}
+              <span className={`kpi-trend-inline ${kpiTrends.noBuyboxSkus.type === 'negative' ? 'negative' : kpiTrends.noBuyboxSkus.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.noBuyboxSkus.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
           </div>
           <div className="kpi-item kpi-blue">
             <div className="label">Actions Recommended</div>
-            <div className="value">48</div>
+            <div className="value value-primary">48</div>
+            <div className="value-secondary">—</div>
           </div>
         </div>
       </div>
@@ -537,7 +506,7 @@ export default function Buybox() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => (
+              {pagedRows.map((row) => (
                 <tr key={row.id}>
                   {visibleColumns.asin && <td>{row.asin}</td>}
                   {visibleColumns.productName && <td>{row.productName}</td>}
@@ -575,6 +544,16 @@ export default function Buybox() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={safePage}
+          pageSize={pageSize}
+          total={totalRows}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+        />
       </div>
     </>
   );

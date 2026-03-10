@@ -9,7 +9,7 @@ const navItems = [
   { path: 'inventory', label: 'Inventory', icon: '📦' },
   { path: 'buybox', label: 'Buybox', icon: '🛒' },
   { path: 'marketing', label: 'Marketing', icon: '📢' },
-  { path: 'product-details', label: 'Product Details', icon: '📋' },
+  { path: 'profile', label: 'Profile', icon: '👤' },
 ];
 
 export default function Dashboard() {
@@ -47,13 +47,6 @@ export default function Dashboard() {
         </nav>
       </aside>
       <main className="dashboard-main">
-        <header className="dashboard-header">
-          <h1>Pattex Dashboard</h1>
-          <div className="header-right">
-            <span className="user-name">{user?.name}</span>
-            <button type="button" className="btn-logout" onClick={handleLogout}>Logout</button>
-          </div>
-        </header>
         <div className="dashboard-content">
           <Outlet />
         </div>

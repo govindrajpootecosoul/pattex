@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
+import Pagination from '../../components/Pagination';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -94,9 +95,10 @@ export default function Inventory() {
   });
   const [stockFilter, setStockFilter] = useState('ALL_SKUS');
   const [metricModal, setMetricModal] = useState(null);
-  const [dateFilterType, setDateFilterType] = useState('');
+  const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
   const [customRangeStart, setCustomRangeStart] = useState('');
   const [customRangeEnd, setCustomRangeEnd] = useState('');
+  const [comparison, setComparison] = useState(null);
   const [showCustomRangePicker, setShowCustomRangePicker] = useState(false);
   const [isMonthRangeDialogOpen, setIsMonthRangeDialogOpen] = useState(false);
   const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
@@ -116,6 +118,8 @@ export default function Inventory() {
     status: true,
   });
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -216,15 +220,25 @@ export default function Inventory() {
   };
 
   useEffect(() => {
+    setLoading(true);
+    setError('');
+    const params = {};
+    if (dateFilterType) params.dateFilterType = dateFilterType;
+    if (customRangeStart) params.customRangeStart = customRangeStart;
+    if (customRangeEnd) params.customRangeEnd = customRangeEnd;
     dashboardApi
-      .getInventory()
+      .getInventory(params)
       .then((data) => {
         const apiRows = Array.isArray(data.rows) ? data.rows : [];
         setRows(apiRows);
+        setComparison(data?.comparison ?? null);
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        setError(e.message);
+        setComparison(null);
+      })
       .finally(() => setLoading(false));
-  }, []);
+  }, [dateFilterType, customRangeStart, customRangeEnd]);
 
   // Cascading options: Category -> Product Name -> ASIN
   const categoryOptions = Array.from(new Set(rows.map((r) => r.category).filter(Boolean)));
@@ -288,7 +302,7 @@ export default function Inventory() {
   };
 
   const clearAllFilters = () => {
-    setDateFilterType('');
+    setDateFilterType('CURRENT_MONTH');
     setCustomRangeStart('');
     setCustomRangeEnd('');
     setShowCustomRangePicker(false);
@@ -298,6 +312,17 @@ export default function Inventory() {
 
   const hasActiveFilters =
     dateFilterType ||
+    customRangeStart ||
+    customRangeEnd ||
+    (filters.search && filters.search.trim()) ||
+    filters.asin ||
+    filters.productName ||
+    filters.category ||
+    filters.channel !== '' ||
+    stockFilter !== 'ALL_SKUS';
+
+  const hasFiltersToClear =
+    dateFilterType !== 'CURRENT_MONTH' ||
     customRangeStart ||
     customRangeEnd ||
     (filters.search && filters.search.trim()) ||
@@ -320,12 +345,32 @@ export default function Inventory() {
     }
   };
 
-  const filteredRows = rows.filter(
-    (row) => applyFilters(row) && applyStockFilter(row) && applyDateFilter(row),
+  const filteredRows = useMemo(
+    () => rows.filter((row) => applyFilters(row) && applyStockFilter(row) && applyDateFilter(row)),
+    [rows, filters, stockFilter, dateFilterType, customRangeStart, customRangeEnd],
   );
   const summary = computeSummary(filteredRows);
 
-  // Dynamic week-over-week (WoW) trends based on actual dates
+  const kpiTrends = useMemo(() => {
+    const fallback = { value: '—', type: 'neutral' };
+    const fmt = (pct) => {
+      if (pct == null || Number.isNaN(pct)) return '—';
+      const sign = pct >= 0 ? '+' : '';
+      return `${sign}${pct}%`;
+    };
+    const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
+    if (!comparison) {
+      return { available: fallback, last30Sales: fallback, dos: fallback, instockRate: fallback };
+    }
+    return {
+      available: { value: fmt(comparison.available?.pctChange), type: type(comparison.available?.pctChange) },
+      last30Sales: { value: fmt(comparison.last30Sales?.pctChange), type: type(comparison.last30Sales?.pctChange) },
+      dos: { value: fmt(comparison.dos?.pctChange), type: type(comparison.dos?.pctChange) },
+      instockRate: { value: fmt(comparison.instockRate?.pctChange), type: type(comparison.instockRate?.pctChange) },
+    };
+  }, [comparison]);
+
+  // Dynamic week-over-week (WoW) trends based on actual dates (kept for any secondary use; cards use kpiTrends from API)
   const rowsForTrend = filteredRows.filter(
     (r) => r.oosDate && !Number.isNaN(new Date(r.oosDate).getTime()),
   );
@@ -544,30 +589,32 @@ export default function Inventory() {
   if (loading) return <div className="section-muted">Loading...</div>;
   if (error) return <div className="auth-error">{error}</div>;
 
+  const totalRows = filteredRows.length;
+  const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const startIndex = (safePage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const pagedRows = filteredRows.slice(startIndex, endIndex);
+
   return (
     <>
-      <h2 className="section-title">Pattex Inventory Dashboard</h2>
-
       <div className="card inventory-filters-card">
-        <h3>Filters</h3>
         <div className="filter-row filter-row-one">
           <div className="filter-group">
-            <label>Search</label>
             <input
               type="text"
-              placeholder="Search ASIN, name, category, channel…"
+              placeholder="Search (ASIN, name, category, channel…)"
               value={filters.search}
               onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
               aria-label="Search"
             />
           </div>
           <div className="filter-group">
-            <label>ASIN</label>
             <select
               value={filters.asin}
               onChange={handleAsinChange}
             >
-              <option value="">All</option>
+              <option value="">ASIN</option>
               {asinOptions.map((asin) => (
                 <option key={asin} value={asin}>
                   {asin}
@@ -576,12 +623,11 @@ export default function Inventory() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Product Name</label>
             <select
               value={filters.productName}
               onChange={handleProductNameChange}
             >
-              <option value="">All</option>
+              <option value="">Product Name</option>
               {productNameOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -590,12 +636,11 @@ export default function Inventory() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Product Category</label>
             <select
               value={filters.category}
               onChange={handleCategoryChange}
             >
-              <option value="">All</option>
+              <option value="">Product Category</option>
               {categoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
@@ -604,12 +649,11 @@ export default function Inventory() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Sales Channel</label>
             <select
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">Sales Channel</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -617,19 +661,33 @@ export default function Inventory() {
               ))}
             </select>
           </div>
-          <div className="filter-group">
-            <label>Date</label>
-            <select
-              value={dateFilterType}
-              onChange={handleDateFilterChange}
-              aria-label="Date filter"
-            >
-              {DATE_FILTER_OPTIONS.map((opt) => (
-                <option key={opt.id || 'none'} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+          <div className="filter-group filter-group-date-with-clear">
+            <div className="filter-date-with-clear">
+              <select
+                value={dateFilterType}
+                onChange={handleDateFilterChange}
+                aria-label="Date filter"
+              >
+                {DATE_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.id || 'none'} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {hasFiltersToClear && (
+                <button
+                  type="button"
+                  className="btn-clear-filter btn-clear-filter-icon"
+                  onClick={clearAllFilters}
+                  aria-label="Clear all filters"
+                  title="Clear all filters"
+                >
+                  <svg className="btn-clear-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
           {showCustomRangePicker && dateFilterType === 'CUSTOM_RANGE' && (
             <div className="filter-group">
@@ -640,18 +698,6 @@ export default function Inventory() {
                 onClick={openMonthRangeDialog}
               >
                 {formatCustomRangeLabel()}
-              </button>
-            </div>
-          )}
-          {hasActiveFilters && (
-            <div className="filter-group filter-group-actions">
-              <label>&nbsp;</label>
-              <button
-                type="button"
-                className="btn-clear-filter"
-                onClick={clearAllFilters}
-              >
-                Clear all filters
               </button>
             </div>
           )}
@@ -667,10 +713,13 @@ export default function Inventory() {
             onClick={() => openMetricModal(METRIC_IDS.AVAILABLE)}
           >
             <div className="label">Available Inventory</div>
-            <div className="value">{summary.totalAvailable.toLocaleString()}</div>
-            <div className={`kpi-trend ${metricTrends.available.type === 'negative' ? 'negative' : metricTrends.available.type === 'neutral' ? 'neutral' : ''}`}>
-              {metricTrends.available.value} from last week
+            <div className="value value-primary">
+              {summary.totalAvailable.toLocaleString()}
+              <span className={`kpi-trend-inline ${kpiTrends.available.type === 'negative' ? 'negative' : kpiTrends.available.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.available.value})
+              </span>
             </div>
+            <div className="value-secondary">vs last period</div>
           </button>
           <button
             type="button"
@@ -678,10 +727,13 @@ export default function Inventory() {
             onClick={() => openMetricModal(METRIC_IDS.LAST_30_SALES)}
           >
             <div className="label">Last 30 Days Sales</div>
-            <div className="value">{summary.last30Sales.toLocaleString()}</div>
-            <div className={`kpi-trend ${metricTrends.last30Sales.type === 'negative' ? 'negative' : metricTrends.last30Sales.type === 'neutral' ? 'neutral' : ''}`}>
-              {metricTrends.last30Sales.value} from last week
+            <div className="value value-primary">
+              {summary.last30Sales.toLocaleString()}
+              <span className={`kpi-trend-inline ${kpiTrends.last30Sales.type === 'negative' ? 'negative' : kpiTrends.last30Sales.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.last30Sales.value})
+              </span>
             </div>
+            <div className="value-secondary">vs last period</div>
           </button>
           <button
             type="button"
@@ -689,10 +741,13 @@ export default function Inventory() {
             onClick={() => openMetricModal(METRIC_IDS.DOS)}
           >
             <div className="label">Avg. Days of Supply</div>
-            <div className="value">{summary.avgDos}</div>
-            <div className={`kpi-trend ${metricTrends.dos.type === 'negative' ? 'negative' : metricTrends.dos.type === 'neutral' ? 'neutral' : ''}`}>
-              {metricTrends.dos.value} from last week
+            <div className="value value-primary">
+              {summary.avgDos}
+              <span className={`kpi-trend-inline ${kpiTrends.dos.type === 'negative' ? 'negative' : kpiTrends.dos.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.dos.value})
+              </span>
             </div>
+            <div className="value-secondary">vs last period</div>
           </button>
           <button
             type="button"
@@ -700,10 +755,13 @@ export default function Inventory() {
             onClick={() => openMetricModal(METRIC_IDS.INSTOCK_RATE)}
           >
             <div className="label">Instock Rate</div>
-            <div className="value">{summary.instockRate}%</div>
-            <div className={`kpi-trend ${metricTrends.instockRate.type === 'negative' ? 'negative' : metricTrends.instockRate.type === 'neutral' ? 'neutral' : ''}`}>
-              {metricTrends.instockRate.value} from last week
+            <div className="value value-primary">
+              {summary.instockRate}%
+              <span className={`kpi-trend-inline ${kpiTrends.instockRate.type === 'negative' ? 'negative' : kpiTrends.instockRate.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.instockRate.value})
+              </span>
             </div>
+            <div className="value-secondary">vs last period</div>
           </button>
         </div>
       </div>
@@ -778,7 +836,7 @@ export default function Inventory() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => (
+              {pagedRows.map((row) => (
                 <tr key={row.id}>
                   {visibleColumns.asin && <td><span className="text-secondary">{row.asin}</span></td>}
                   {visibleColumns.productName && (
@@ -824,6 +882,16 @@ export default function Inventory() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={safePage}
+          pageSize={pageSize}
+          total={totalRows}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+        />
       </div>
 
       {renderMetricModal()}

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { dashboardApi } from '../../api/api';
+import Pagination from '../../components/Pagination';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -20,15 +21,12 @@ const METRIC_IDS = {
   TACOS: 'TACOS',
 };
 
-/* Dummy trend indicators for KPI cards */
-const KPI_TRENDS = {
-  overall: { value: '+5%', type: 'positive' },
-  ad: { value: '+3%', type: 'positive' },
-  organic: { value: '-1%', type: 'negative' },
-  newToBrand: { value: '+8%', type: 'positive' },
-  promo: { value: '0%', type: 'neutral' },
-  aov: { value: '+2%', type: 'positive' },
-  tacos: { value: '-0.5%', type: 'negative' },
+/* Fallback when comparison not yet loaded */
+const KPI_TRENDS_FALLBACK = {
+  overall: { value: '—', type: 'neutral' },
+  ad: { value: '—', type: 'neutral' },
+  organic: { value: '—', type: 'neutral' },
+  tacos: { value: '—', type: 'neutral' },
 };
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -87,7 +85,7 @@ export default function Revenue() {
     category: '',
     channel: '',
   });
-  const [dateFilterType, setDateFilterType] = useState('');
+  const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
   const [customRangeStart, setCustomRangeStart] = useState('');
   const [customRangeEnd, setCustomRangeEnd] = useState('');
   const [showCustomRangePicker, setShowCustomRangePicker] = useState(false);
@@ -96,24 +94,33 @@ export default function Revenue() {
   const [tempRange, setTempRange] = useState({ start: null, end: null });
   const [metricModal, setMetricModal] = useState(null);
   const [detailedView, setDetailedView] = useState('all'); // 'all' | 'best_units' | 'worst_units' | 'best_revenue' | 'worst_revenue'
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [comparison, setComparison] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const params = {};
+    if (dateFilterType) params.dateFilterType = dateFilterType;
+    if (customRangeStart) params.customRangeStart = customRangeStart;
+    if (customRangeEnd) params.customRangeEnd = customRangeEnd;
     dashboardApi
-      .getRevenue()
+      .getRevenue(params)
       .then((data) => {
         if (!cancelled && data?.rows) setRevenueRows(data.rows);
+        if (!cancelled) setComparison(data?.comparison ?? null);
       })
       .catch((err) => {
         if (!cancelled) setError(err?.message || 'Failed to load revenue data');
+        if (!cancelled) setComparison(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [dateFilterType, customRangeStart, customRangeEnd]);
 
   // Cascading options: Category -> Product Name -> ASIN
   const categoryOptions = useMemo(
@@ -199,12 +206,21 @@ export default function Revenue() {
     return filteredRows;
   }, [filteredRows, detailedView]);
 
+  const totalRows = tableRows.length;
+  const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const startIndex = (safePage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const pagedRows = tableRows.slice(startIndex, endIndex);
+
   const summary = useMemo(() => {
     if (!filteredRows.length) {
       return {
         overallUnit: 0,
         overallRevenue: 0,
+        adUnit: 0,
         adRevenue: 0,
+        organicUnit: 0,
         organicRevenue: 0,
         newToBrandUnit: 0,
         promoRevenue: 0,
@@ -216,7 +232,9 @@ export default function Revenue() {
       (acc, r) => {
         acc.overallUnit += Number(r.overallUnit) || 0;
         acc.overallRevenue += Number(r.overallRevenue) || 0;
+        acc.adUnit += Number(r.adUnit) || 0;
         acc.adRevenue += Number(r.adRevenue) || 0;
+        acc.organicUnit += Number(r.organicUnit) || 0;
         acc.organicRevenue += Number(r.organicRevenue) || 0;
         acc.newToBrandUnit += Number(r.newToBrandUnit) || 0;
         acc.promoRevenue += (Number(r.promotionalUnit) || 0) * (Number(r.aov) || 0);
@@ -227,7 +245,9 @@ export default function Revenue() {
       {
         overallUnit: 0,
         overallRevenue: 0,
+        adUnit: 0,
         adRevenue: 0,
+        organicUnit: 0,
         organicRevenue: 0,
         newToBrandUnit: 0,
         promoRevenue: 0,
@@ -243,6 +263,22 @@ export default function Revenue() {
     };
   }, [filteredRows]);
 
+  const kpiTrends = useMemo(() => {
+    if (!comparison) return KPI_TRENDS_FALLBACK;
+    const fmt = (pct) => {
+      if (pct == null || Number.isNaN(pct)) return '—';
+      const sign = pct >= 0 ? '+' : '';
+      return `${sign}${pct}%`;
+    };
+    const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
+    return {
+      overall: { value: fmt(comparison.overall?.pctChange), type: type(comparison.overall?.pctChange) },
+      ad: { value: fmt(comparison.ad?.pctChange), type: type(comparison.ad?.pctChange) },
+      organic: { value: fmt(comparison.organic?.pctChange), type: type(comparison.organic?.pctChange) },
+      tacos: { value: fmt(comparison.tacos?.pctChange), type: type(comparison.tacos?.pctChange) },
+    };
+  }, [comparison]);
+
   const clearAllFilters = () => {
     setFilters({ search: '', asin: '', productName: '', category: '', channel: '' });
     setDateFilterType('');
@@ -253,6 +289,17 @@ export default function Revenue() {
 
   const hasActiveFilters =
     dateFilterType ||
+    customRangeStart ||
+    customRangeEnd ||
+    (filters.search && filters.search.trim()) ||
+    filters.asin ||
+    filters.productName ||
+    filters.category ||
+    filters.channel !== '';
+
+  /* Only show clear when user has changed something from default (e.g. not just "Current Month" with no filters) */
+  const hasFiltersToClear =
+    dateFilterType !== 'CURRENT_MONTH' ||
     customRangeStart ||
     customRangeEnd ||
     (filters.search && filters.search.trim()) ||
@@ -536,7 +583,6 @@ export default function Revenue() {
   if (loading) {
     return (
       <>
-        <h2 className="section-title">Pattex Revenue Dashboard</h2>
         <div className="card">
           <p className="section-muted">Loading revenue data...</p>
         </div>
@@ -547,7 +593,6 @@ export default function Revenue() {
   if (error) {
     return (
       <>
-        <h2 className="section-title">Pattex Revenue Dashboard</h2>
         <div className="card">
           <p className="section-muted" style={{ color: 'var(--color-error, #c00)' }}>{error}</p>
         </div>
@@ -557,28 +602,23 @@ export default function Revenue() {
 
   return (
     <>
-      <h2 className="section-title">Pattex Revenue Dashboard</h2>
-
       <div className="card revenue-filters-card">
-        <h3>Filters</h3>
         <div className="filter-row filter-row-one">
           <div className="filter-group">
-            <label>Search</label>
             <input
               type="text"
-              placeholder="Search ASIN, name, category, channel…"
+              placeholder="Search (ASIN, name, category, channel…)"
               value={filters.search}
               onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
               aria-label="Search"
             />
           </div>
           <div className="filter-group">
-            <label>ASIN</label>
             <select
               value={filters.asin}
               onChange={handleAsinChange}
             >
-              <option value="">All</option>
+              <option value="">ASIN</option>
               {asinOptions.map((asin) => (
                 <option key={asin} value={asin}>
                   {asin}
@@ -587,12 +627,11 @@ export default function Revenue() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Product Name</label>
             <select
               value={filters.productName}
               onChange={handleProductNameChange}
             >
-              <option value="">All</option>
+              <option value="">Product Name</option>
               {productNameOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -601,12 +640,11 @@ export default function Revenue() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Product Category</label>
             <select
               value={filters.category}
               onChange={handleCategoryChange}
             >
-              <option value="">All</option>
+              <option value="">Product Category</option>
               {categoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
@@ -615,12 +653,11 @@ export default function Revenue() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Sales Channel</label>
             <select
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">All</option>
+              <option value="">Sales Channel</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -628,19 +665,33 @@ export default function Revenue() {
               ))}
             </select>
           </div>
-          <div className="filter-group">
-            <label>Date</label>
-            <select
-              value={dateFilterType}
-              onChange={handleDateFilterChange}
-              aria-label="Date filter"
-            >
-              {DATE_FILTER_OPTIONS.map((opt) => (
-                <option key={opt.id || 'none'} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+          <div className="filter-group filter-group-date-with-clear">
+            <div className="filter-date-with-clear">
+              <select
+                value={dateFilterType}
+                onChange={handleDateFilterChange}
+                aria-label="Date filter"
+              >
+                {DATE_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.id || 'none'} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {hasFiltersToClear && (
+                <button
+                  type="button"
+                  className="btn-clear-filter btn-clear-filter-icon"
+                  onClick={clearAllFilters}
+                  aria-label="Clear all filters"
+                  title="Clear all filters"
+                >
+                  <svg className="btn-clear-icon-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
           {showCustomRangePicker && dateFilterType === 'CUSTOM_RANGE' && (
             <div className="filter-group">
@@ -651,18 +702,6 @@ export default function Revenue() {
                 onClick={openMonthRangeDialog}
               >
                 {formatCustomRangeLabel()}
-              </button>
-            </div>
-          )}
-          {hasActiveFilters && (
-            <div className="filter-group filter-group-actions">
-              <label>&nbsp;</label>
-              <button
-                type="button"
-                className="btn-clear-filter"
-                onClick={clearAllFilters}
-              >
-                Clear all filters
               </button>
             </div>
           )}
@@ -678,15 +717,13 @@ export default function Revenue() {
             onClick={() => openMetricModal(METRIC_IDS.OVERALL)}
           >
             <div className="label">Overall Unit / Revenue</div>
-            <div className="value">
-              {summary.overallUnit.toLocaleString()} units
+            <div className="value value-primary">
+              AED {summary.overallRevenue.toLocaleString()}
+              <span className={`kpi-trend-inline ${kpiTrends.overall.type === 'negative' ? 'negative' : kpiTrends.overall.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.overall.value})
+              </span>
             </div>
-            <div className="section-muted text-secondary" style={{ marginTop: 2 }}>
-              Revenue AED {summary.overallRevenue.toLocaleString()}
-            </div>
-            <div className={`kpi-trend ${KPI_TRENDS.overall.type === 'negative' ? 'negative' : KPI_TRENDS.overall.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.overall.value} from last period
-            </div>
+            <div className="value-secondary">{summary.overallUnit.toLocaleString()} units</div>
           </button>
           <button
             type="button"
@@ -694,12 +731,13 @@ export default function Revenue() {
             onClick={() => openMetricModal(METRIC_IDS.AD)}
           >
             <div className="label">Ad Unit / Revenue</div>
-            <div className="value">
+            <div className="value value-primary">
               AED {summary.adRevenue.toLocaleString()}
+              <span className={`kpi-trend-inline ${kpiTrends.ad.type === 'negative' ? 'negative' : kpiTrends.ad.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.ad.value})
+              </span>
             </div>
-            <div className={`kpi-trend ${KPI_TRENDS.ad.type === 'negative' ? 'negative' : KPI_TRENDS.ad.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.ad.value} from last period
-            </div>
+            <div className="value-secondary">{summary.adUnit.toLocaleString()} units</div>
           </button>
           <button
             type="button"
@@ -707,51 +745,13 @@ export default function Revenue() {
             onClick={() => openMetricModal(METRIC_IDS.ORGANIC)}
           >
             <div className="label">Organic Unit / Revenue</div>
-            <div className="value">
+            <div className="value value-primary">
               AED {summary.organicRevenue.toLocaleString()}
+              <span className={`kpi-trend-inline ${kpiTrends.organic.type === 'negative' ? 'negative' : kpiTrends.organic.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.organic.value})
+              </span>
             </div>
-            <div className={`kpi-trend ${KPI_TRENDS.organic.type === 'negative' ? 'negative' : KPI_TRENDS.organic.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.organic.value} from last period
-            </div>
-          </button>
-          <button
-            type="button"
-            className="kpi-item kpi-clickable kpi-amber"
-            onClick={() => openMetricModal(METRIC_IDS.NEW_TO_BRAND)}
-          >
-            <div className="label">New to Brand Units</div>
-            <div className="value">
-              {summary.newToBrandUnit.toLocaleString()} units
-            </div>
-            <div className={`kpi-trend ${KPI_TRENDS.newToBrand.type === 'negative' ? 'negative' : KPI_TRENDS.newToBrand.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.newToBrand.value} from last period
-            </div>
-          </button>
-          <button
-            type="button"
-            className="kpi-item kpi-clickable kpi-rose"
-            onClick={() => openMetricModal(METRIC_IDS.PROMO)}
-          >
-            <div className="label">Promotional Units</div>
-            <div className="value">
-              AED {summary.promoRevenue.toLocaleString()}
-            </div>
-            <div className={`kpi-trend ${KPI_TRENDS.promo.type === 'negative' ? 'negative' : KPI_TRENDS.promo.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.promo.value} from last period
-            </div>
-          </button>
-          <button
-            type="button"
-            className="kpi-item kpi-clickable kpi-slate"
-            onClick={() => openMetricModal(METRIC_IDS.AOV)}
-          >
-            <div className="label">Average Order Value (AOV)</div>
-            <div className="value">
-              AED {summary.aov.toFixed(2)}
-            </div>
-            <div className={`kpi-trend ${KPI_TRENDS.aov.type === 'negative' ? 'negative' : KPI_TRENDS.aov.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.aov.value} from last period
-            </div>
+            <div className="value-secondary">{summary.organicUnit.toLocaleString()} units</div>
           </button>
           <button
             type="button"
@@ -759,12 +759,13 @@ export default function Revenue() {
             onClick={() => openMetricModal(METRIC_IDS.TACOS)}
           >
             <div className="label">TACoS</div>
-            <div className="value">
+            <div className="value value-primary">
               {summary.tacos.toFixed(1)}%
+              <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'negative' ? 'negative' : kpiTrends.tacos.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.tacos.value})
+              </span>
             </div>
-            <div className={`kpi-trend ${KPI_TRENDS.tacos.type === 'negative' ? 'negative' : KPI_TRENDS.tacos.type === 'neutral' ? 'neutral' : ''}`}>
-              {KPI_TRENDS.tacos.value} from last period
-            </div>
+            <div className="value-secondary">vs last period</div>
           </button>
         </div>
       </div>
@@ -833,7 +834,7 @@ export default function Revenue() {
               </tr>
             </thead>
             <tbody>
-              {tableRows.map((row) => (
+              {pagedRows.map((row) => (
                 <tr key={row.id}>
                   <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
                   <td>
@@ -873,6 +874,16 @@ export default function Revenue() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={safePage}
+          pageSize={pageSize}
+          total={totalRows}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+        />
       </div>
 
       {renderMetricModal()}

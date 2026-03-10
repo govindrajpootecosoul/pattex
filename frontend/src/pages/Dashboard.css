@@ -189,7 +189,7 @@
 .dashboard-content {
   flex: 1;
   min-height: 0;
-  padding: 1.5rem;
+  padding: 0 1.5rem 1.5rem;
   overflow: auto;
   background: var(--bg);
 }
@@ -326,6 +326,37 @@
   box-shadow: var(--shadow-card);
 }
 
+/* Tighter layout for filter cards (Revenue, Inventory, Buybox, Marketing) */
+.inventory-filters-card,
+.marketing-filters-card,
+.revenue-filters-card {
+  padding: 0.75rem 1.5rem;
+  margin: 0 -1.5rem 0.75rem;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: #f8f9fa;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  border-bottom: 1px solid #e0e0e0;
+  box-shadow: none;
+}
+
+.inventory-filters-card .filter-row,
+.marketing-filters-card .filter-row,
+.revenue-filters-card .filter-row {
+  margin-bottom: 0.5rem;
+  align-items: center;
+}
+
+.inventory-filters-card .filter-row:last-child,
+.marketing-filters-card .filter-row:last-child,
+.revenue-filters-card .filter-row:last-child {
+  margin-bottom: 0;
+}
+
 .exec-kpi-shell {
   padding-top: 1.5rem;
 }
@@ -456,7 +487,7 @@
 }
 
 .revenue-kpi-grid .kpi-item {
-  min-height: 140px;
+  min-height: 100px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -479,6 +510,40 @@
   font-weight: 600;
   color: var(--text);
   letter-spacing: -0.02em;
+}
+
+/* Revenue KPI: primary value (AED/%) bold and larger, secondary (units) smaller */
+.kpi-item .value-primary {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.kpi-item .value-secondary {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+.kpi-item .kpi-trend-inline {
+  font-size: 0.9em;
+  font-weight: 600;
+  margin-left: 0.2em;
+}
+
+.kpi-item .kpi-trend-inline.negative {
+  color: var(--danger);
+}
+
+.kpi-item .kpi-trend-inline.neutral {
+  color: var(--text-muted);
+}
+
+.kpi-item .kpi-trend-inline:not(.negative):not(.neutral) {
+  color: var(--success);
 }
 
 .kpi-trend {
@@ -1080,6 +1145,33 @@
   margin-bottom: 1rem;
 }
 
+.marketing-sku-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.marketing-sku-toolbar .filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.marketing-sku-toolbar-left {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.marketing-sku-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .btn-chip {
   padding: 0.4rem 0.9rem;
   border-radius: 999px;
@@ -1162,6 +1254,150 @@
 .btn-clear-filter:hover {
   background: rgba(0, 0, 0, 0.04);
   color: var(--text);
+}
+
+/* Date + clear as one integrated control (no extra white space) */
+.revenue-filters-card .filter-group-date-with-clear {
+  flex: 0 1 auto;
+  max-width: 220px;
+  min-width: 0;
+}
+
+.revenue-filters-card .filter-date-with-clear {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.revenue-filters-card .filter-date-with-clear select {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.revenue-filters-card .filter-row-one .btn-clear-filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.75;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.revenue-filters-card .filter-row-one .btn-clear-filter-icon:hover {
+  background: var(--bg-muted, rgba(0, 0, 0, 0.06));
+  color: var(--text);
+  opacity: 1;
+}
+
+.revenue-filters-card .filter-row-one .btn-clear-filter-icon .btn-clear-icon-svg {
+  flex-shrink: 0;
+}
+
+/* Inventory: same integrated date + clear icon as Revenue */
+.inventory-filters-card .filter-group-date-with-clear {
+  flex: 0 1 auto;
+  max-width: 220px;
+  min-width: 0;
+}
+
+.inventory-filters-card .filter-date-with-clear {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.inventory-filters-card .filter-date-with-clear select {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.inventory-filters-card .filter-row-one .btn-clear-filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.75;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.inventory-filters-card .filter-row-one .btn-clear-filter-icon:hover {
+  background: var(--bg-muted, rgba(0, 0, 0, 0.06));
+  color: var(--text);
+  opacity: 1;
+}
+
+.inventory-filters-card .filter-row-one .btn-clear-filter-icon .btn-clear-icon-svg {
+  flex-shrink: 0;
+}
+
+/* Marketing: same integrated date + clear icon as Revenue */
+.marketing-filters-card .filter-group-date-with-clear {
+  flex: 0 1 auto;
+  max-width: 220px;
+  min-width: 0;
+}
+
+.marketing-filters-card .filter-date-with-clear {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.marketing-filters-card .filter-date-with-clear select {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.marketing-filters-card .filter-row-one .btn-clear-filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.75;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.marketing-filters-card .filter-row-one .btn-clear-filter-icon:hover {
+  background: var(--bg-muted, rgba(0, 0, 0, 0.06));
+  color: var(--text);
+  opacity: 1;
+}
+
+.marketing-filters-card .filter-row-one .btn-clear-filter-icon .btn-clear-icon-svg {
+  flex-shrink: 0;
 }
 
 .fade-in-up {

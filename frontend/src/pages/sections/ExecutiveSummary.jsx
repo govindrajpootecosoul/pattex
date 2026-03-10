@@ -110,7 +110,6 @@ export default function ExecutiveSummary() {
   return (
     <div className="exec-summary">
       <header className="exec-header-row fade-in-up">
-        <h2 className="exec-title-main">Welcome to Pattex Dashboard</h2>
         <div className="exec-header-right">
           <button type="button" className="exec-month-select">
             {data.monthRange || 'Current Month'}

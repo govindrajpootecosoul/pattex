@@ -16,7 +16,6 @@ export default function ProductDetails() {
 
   return (
     <>
-      <h2 className="section-title">{data?.title || 'Product Details'}</h2>
       <div className="card coming-soon">
         <h3>Coming soon</h3>
         <p>{data?.message || 'Product Details section – coming soon. Deep dive ASIN performance, last 30 days sales will be available here.'}</p>

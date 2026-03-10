@@ -39,9 +39,48 @@ export const authApi = {
 
 export const dashboardApi = {
   getExecutiveSummary: () => request('/dashboard/executive-summary'),
-  getRevenue: () => request('/dashboard/revenue'),
-  getInventory: () => request('/dashboard/inventory'),
-  getBuybox: () => request('/dashboard/buybox'),
-  getMarketing: () => request('/dashboard/marketing'),
+  getRevenue: (params) => {
+    const q = new URLSearchParams();
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    const query = q.toString();
+    return request(`/dashboard/revenue${query ? `?${query}` : ''}`);
+  },
+  getInventory: (params) => {
+    const q = new URLSearchParams();
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    const query = q.toString();
+    return request(`/dashboard/inventory${query ? `?${query}` : ''}`);
+  },
+  getBuybox: (params) => {
+    const q = new URLSearchParams();
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    const query = q.toString();
+    return request(`/dashboard/buybox${query ? `?${query}` : ''}`);
+  },
+  getMarketing: (params) => {
+    const q = new URLSearchParams();
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.asin) q.set('asin', params.asin);
+    if (params?.productName) q.set('productName', params.productName);
+    if (params?.productCategory) q.set('productCategory', params.productCategory);
+    if (params?.packSize) q.set('packSize', params.packSize);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    // Campaign-level filters for Detailed Campaign Level Marketing View
+    if (params?.campaignDateRange) q.set('campaignDateRange', params.campaignDateRange);
+    if (params?.campaignType) q.set('campaignType', params.campaignType);
+    if (params?.campaignName) q.set('campaignName', params.campaignName);
+    if (params?.campaignPortfolio) q.set('campaignPortfolio', params.campaignPortfolio);
+    if (params?.campaignSalesChannel) q.set('campaignSalesChannel', params.campaignSalesChannel);
+    const query = q.toString();
+    return request(`/dashboard/marketing${query ? `?${query}` : ''}`);
+  },
   getProductDetails: () => request('/dashboard/product-details'),
 };
