@@ -2,15 +2,6 @@ import { useEffect, useState, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 
-const DATE_FILTER_OPTIONS = [
-  { id: '', label: '— Select period —' },
-  { id: 'CURRENT_MONTH', label: 'Current Month' },
-  { id: 'PREVIOUS_MONTH', label: 'Previous Month' },
-  { id: 'CURRENT_YEAR', label: 'Current Year' },
-  { id: 'PREVIOUS_YEAR', label: 'Previous Year' },
-  { id: 'CUSTOM_RANGE', label: 'Custom Range' },
-];
-
 const STOCK_FILTERS = [
   { id: 'ALL_SKUS', label: 'All SKUs' },
   { id: 'LOW_STOCK', label: 'Low Stock' },
@@ -53,34 +44,14 @@ const computeSummary = (rows) => {
   return { totalAvailable, last30Sales, avgDos, instockRate };
 };
 
-function getDateRangeForFilter(dateFilterType, customStart, customEnd) {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  if (!dateFilterType) return null;
-  if (dateFilterType === 'CUSTOM_RANGE' && customStart) {
-    const start = customEnd && customEnd < customStart ? customEnd : customStart;
-    const end = customEnd && customEnd >= customStart ? customEnd : customStart;
-    return { start, end };
-  }
-  if (dateFilterType === 'CURRENT_MONTH') {
-    const mm = String(m + 1).padStart(2, '0');
-    const ym = `${y}-${mm}`;
-    return { start: ym, end: ym };
-  }
-  if (dateFilterType === 'PREVIOUS_MONTH') {
-    const prev = new Date(y, m - 1, 1);
-    const ym = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
-    return { start: ym, end: ym };
-  }
-  if (dateFilterType === 'CURRENT_YEAR') {
-    return { start: `${y}-01`, end: `${y}-12` };
-  }
-  if (dateFilterType === 'PREVIOUS_YEAR') {
-    return { start: `${y - 1}-01`, end: `${y - 1}-12` };
-  }
-  return null;
-}
+const normalizeDateKey = (value) => {
+  if (!value) return '';
+  const s = String(value);
+  if (s.length >= 10) return s.slice(0, 10);
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+};
 
 export default function Inventory() {
   const [rows, setRows] = useState([]);
@@ -95,14 +66,18 @@ export default function Inventory() {
   });
   const [stockFilter, setStockFilter] = useState('ALL_SKUS');
   const [metricModal, setMetricModal] = useState(null);
-  const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
-  const [customRangeStart, setCustomRangeStart] = useState('');
-  const [customRangeEnd, setCustomRangeEnd] = useState('');
+  const [todayStr] = useState(() => new Date().toISOString().split('T')[0]);
+  const [maxSelectableDateStr] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 3);
+    return d.toISOString().split('T')[0];
+  });
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 3);
+    return d.toISOString().split('T')[0];
+  });
   const [comparison, setComparison] = useState(null);
-  const [showCustomRangePicker, setShowCustomRangePicker] = useState(false);
-  const [isMonthRangeDialogOpen, setIsMonthRangeDialogOpen] = useState(false);
-  const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
-  const [tempRange, setTempRange] = useState({ start: null, end: null });
   const [visibleColumns, setVisibleColumns] = useState({
     asin: true,
     productName: true,
@@ -120,125 +95,30 @@ export default function Inventory() {
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-
-  const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-  const toYearMonth = (date) => {
-    if (!date) return '';
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    return `${y}-${m}`;
-  };
-
-  const parseYearMonth = (value) => {
-    if (!value) return null;
-    const [y, m] = value.split('-').map(Number);
-    if (!y || !m) return null;
-    return new Date(y, m - 1, 1);
-  };
-
-  const openMonthRangeDialog = () => {
-    const startDate = parseYearMonth(customRangeStart);
-    const endDate = parseYearMonth(customRangeEnd);
-    const baseYear = startDate ? startDate.getFullYear() : new Date().getFullYear();
-    setPickerYear(baseYear);
-    setTempRange({
-      start: startDate,
-      end: endDate && (!startDate || endDate >= startDate) ? endDate : null,
-    });
-    setIsMonthRangeDialogOpen(true);
-  };
-
-  const closeMonthRangeDialog = () => {
-    setIsMonthRangeDialogOpen(false);
-  };
-
-  const handleMonthClick = (monthIndex) => {
-    const clicked = new Date(pickerYear, monthIndex, 1);
-    const { start, end } = tempRange;
-
-    if (!start || (start && end)) {
-      setTempRange({ start: clicked, end: null });
-      return;
-    }
-
-    if (start && !end) {
-      if (clicked < start) {
-        setTempRange({ start: clicked, end: start });
-      } else if (clicked.getTime() === start.getTime()) {
-        setTempRange({ start, end: null });
-      } else {
-        setTempRange({ start, end: clicked });
-      }
-    }
-  };
-
-  const confirmMonthRange = () => {
-    if (!tempRange.start) {
-      closeMonthRangeDialog();
-      return;
-    }
-    const startStr = toYearMonth(tempRange.start);
-    const endStr = toYearMonth(tempRange.end || tempRange.start);
-    setCustomRangeStart(startStr);
-    setCustomRangeEnd(endStr);
-    setShowCustomRangePicker(false);
-    closeMonthRangeDialog();
-  };
-
-  const isMonthInRange = (monthIndex) => {
-    const { start, end } = tempRange;
-    if (!start) return false;
-    const current = new Date(pickerYear, monthIndex, 1);
-    if (start && !end) {
-      return current.getTime() === start.getTime();
-    }
-    return current >= start && current <= end;
-  };
-
-  const isMonthEdge = (monthIndex) => {
-    const { start, end } = tempRange;
-    if (!start) return false;
-    const current = new Date(pickerYear, monthIndex, 1);
-    if (start && !end) {
-      return current.getTime() === start.getTime();
-    }
-    return current.getTime() === start.getTime() || (end && current.getTime() === end.getTime());
-  };
-
-  const formatCustomRangeLabel = () => {
-    if (!customRangeStart && !customRangeEnd) return 'Select month range';
-    const start = parseYearMonth(customRangeStart);
-    const end = parseYearMonth(customRangeEnd);
-    if (!start && !end) return 'Select month range';
-    const startLabel = `${MONTH_LABELS[start.getMonth()]} ${start.getFullYear()}`;
-    if (!end || end.getTime() === start.getTime()) {
-      return startLabel;
-    }
-    const endLabel = `${MONTH_LABELS[end.getMonth()]} ${end.getFullYear()}`;
-    return `${startLabel} – ${endLabel}`;
-  };
+  const [updatedAt, setUpdatedAt] = useState(null);
 
   useEffect(() => {
     setLoading(true);
     setError('');
     const params = {};
-    if (dateFilterType) params.dateFilterType = dateFilterType;
-    if (customRangeStart) params.customRangeStart = customRangeStart;
-    if (customRangeEnd) params.customRangeEnd = customRangeEnd;
+    if (selectedDate) {
+      params.customRangeStart = selectedDate;
+      params.customRangeEnd = selectedDate;
+    }
     dashboardApi
       .getInventory(params)
       .then((data) => {
         const apiRows = Array.isArray(data.rows) ? data.rows : [];
         setRows(apiRows);
         setComparison(data?.comparison ?? null);
+        setUpdatedAt(data?.updatedAt ?? null);
       })
       .catch((e) => {
         setError(e.message);
         setComparison(null);
       })
       .finally(() => setLoading(false));
-  }, [dateFilterType, customRangeStart, customRangeEnd]);
+  }, [selectedDate]);
 
   // Cascading options: Category -> Product Name -> ASIN
   const categoryOptions = Array.from(new Set(rows.map((r) => r.category).filter(Boolean)));
@@ -294,37 +174,21 @@ export default function Inventory() {
     }
   };
 
-  const dateRange = getDateRangeForFilter(dateFilterType, customRangeStart, customRangeEnd);
-
   const applyDateFilter = (row) => {
-    if (!dateRange || !row.reportMonth) return true;
-    return row.reportMonth >= dateRange.start && row.reportMonth <= dateRange.end;
+    if (!selectedDate) return true;
+    const rowDate = normalizeDateKey(row.oosDate);
+    if (!rowDate) return false;
+    return rowDate === selectedDate;
   };
 
   const clearAllFilters = () => {
-    setDateFilterType('CURRENT_MONTH');
-    setCustomRangeStart('');
-    setCustomRangeEnd('');
-    setShowCustomRangePicker(false);
+    setSelectedDate(maxSelectableDateStr);
     setFilters({ search: '', asin: '', productName: '', category: '', channel: '' });
     setStockFilter('ALL_SKUS');
   };
 
-  const hasActiveFilters =
-    dateFilterType ||
-    customRangeStart ||
-    customRangeEnd ||
-    (filters.search && filters.search.trim()) ||
-    filters.asin ||
-    filters.productName ||
-    filters.category ||
-    filters.channel !== '' ||
-    stockFilter !== 'ALL_SKUS';
-
   const hasFiltersToClear =
-    dateFilterType !== 'CURRENT_MONTH' ||
-    customRangeStart ||
-    customRangeEnd ||
+    selectedDate !== maxSelectableDateStr ||
     (filters.search && filters.search.trim()) ||
     filters.asin ||
     filters.productName ||
@@ -332,31 +196,54 @@ export default function Inventory() {
     filters.channel !== '' ||
     stockFilter !== 'ALL_SKUS';
 
-  const handleDateFilterChange = (e) => {
-    const value = e.target.value;
-    setDateFilterType(value);
-    if (value === 'CUSTOM_RANGE') {
-      setShowCustomRangePicker(true);
-      openMonthRangeDialog();
-    } else {
-      setShowCustomRangePicker(false);
-      setCustomRangeStart('');
-      setCustomRangeEnd('');
-    }
-  };
+  const filteredRowsNoDate = useMemo(
+    () => rows.filter((row) => applyFilters(row) && applyStockFilter(row)),
+    [rows, filters, stockFilter],
+  );
 
   const filteredRows = useMemo(
-    () => rows.filter((row) => applyFilters(row) && applyStockFilter(row) && applyDateFilter(row)),
-    [rows, filters, stockFilter, dateFilterType, customRangeStart, customRangeEnd],
+    () => filteredRowsNoDate.filter((row) => applyDateFilter(row)),
+    [filteredRowsNoDate, selectedDate],
   );
+
   const summary = computeSummary(filteredRows);
+
+  // Last 30 days window (based on selectedDate) for total_sales aggregation
+  const rowsInLast30Days = useMemo(() => {
+    if (!selectedDate) return filteredRowsNoDate;
+    const end = new Date(selectedDate);
+    if (Number.isNaN(end.getTime())) return filteredRowsNoDate;
+    const start = new Date(end);
+    start.setDate(start.getDate() - 29); // inclusive 30-day window
+
+    return filteredRowsNoDate.filter((row) => {
+      const key = normalizeDateKey(row.oosDate);
+      if (!key) return false;
+      const d = new Date(key);
+      if (Number.isNaN(d.getTime())) return false;
+      return d >= start && d <= end;
+    });
+  }, [filteredRowsNoDate, selectedDate]);
+
+  const summaryLast30 = useMemo(() => computeSummary(rowsInLast30Days), [rowsInLast30Days]);
+
+  const last30SalesByAsin = useMemo(() => {
+    const map = {};
+    rowsInLast30Days.forEach((row) => {
+      const asin = row.asin;
+      if (!asin) return;
+      const sales = Number(row.last30DaysSales) || 0;
+      map[asin] = (map[asin] || 0) + sales;
+    });
+    return map;
+  }, [rowsInLast30Days]);
 
   const kpiTrends = useMemo(() => {
     const fallback = { value: '—', type: 'neutral' };
     const fmt = (pct) => {
       if (pct == null || Number.isNaN(pct)) return '—';
-      const sign = pct >= 0 ? '+' : '';
-      return `${sign}${pct}%`;
+      if (pct >= 0) return `↑${pct}%`;
+      return `↓${Math.abs(pct)}%`;
     };
     const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
     if (!comparison) {
@@ -556,7 +443,7 @@ export default function Inventory() {
                         <td>{row.asin}</td>
                         <td>{row.productName}</td>
                         <td>{row.channel}</td>
-                        <td>{row.last30DaysSales}</td>
+                        <td>AED {Math.round(Number(row.last30DaysSales) || 0).toLocaleString()}</td>
                       </>
                     )}
                     {metricModal === METRIC_IDS.DOS && (
@@ -595,6 +482,8 @@ export default function Inventory() {
   const startIndex = (safePage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
   const pagedRows = filteredRows.slice(startIndex, endIndex);
+
+  const dataUpdatedDate = updatedAt ? String(updatedAt).split('T')[0] : null;
 
   return (
     <>
@@ -663,17 +552,13 @@ export default function Inventory() {
           </div>
           <div className="filter-group filter-group-date-with-clear">
             <div className="filter-date-with-clear">
-              <select
-                value={dateFilterType}
-                onChange={handleDateFilterChange}
-                aria-label="Date filter"
-              >
-                {DATE_FILTER_OPTIONS.map((opt) => (
-                  <option key={opt.id || 'none'} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+              <input
+                type="date"
+                value={selectedDate}
+                max={maxSelectableDateStr}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                aria-label="Inventory date"
+              />
               {hasFiltersToClear && (
                 <button
                   type="button"
@@ -689,23 +574,19 @@ export default function Inventory() {
               )}
             </div>
           </div>
-          {showCustomRangePicker && dateFilterType === 'CUSTOM_RANGE' && (
-            <div className="filter-group">
-              <label>Period</label>
-              <button
-                type="button"
-                className="btn-month-range"
-                onClick={openMonthRangeDialog}
-              >
-                {formatCustomRangeLabel()}
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
       <div className="card">
-        <h3>Key Inventory Metrics</h3>
+        <div className="exec-kpi-top">
+          <h3 className="exec-kpi-title">Key Inventory Metrics</h3>
+          {dataUpdatedDate && (
+            <span className="exec-updated-text">
+              <span className="pulse-dot" />
+              Data updated as of <strong>{dataUpdatedDate}</strong>
+            </span>
+          )}
+        </div>
         <div className="kpi-grid revenue-kpi-grid">
           <button
             type="button"
@@ -728,12 +609,12 @@ export default function Inventory() {
           >
             <div className="label">Last 30 Days Sales</div>
             <div className="value value-primary">
-              {summary.last30Sales.toLocaleString()}
+              AED {Math.round(summaryLast30.last30Sales).toLocaleString()}
               <span className={`kpi-trend-inline ${kpiTrends.last30Sales.type === 'negative' ? 'negative' : kpiTrends.last30Sales.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.last30Sales.value})
               </span>
             </div>
-            <div className="value-secondary">vs last period</div>
+            <div className="value-secondary">vs last period (AED)</div>
           </button>
           <button
             type="button"
@@ -854,7 +735,15 @@ export default function Inventory() {
                   {visibleColumns.packSize && <td>{row.packSize}</td>}
                   {visibleColumns.channel && <td>{row.channel}</td>}
                   {visibleColumns.available && <td className="col-num">{row.available}</td>}
-                  {visibleColumns.sales30 && <td className="col-num">{row.last30DaysSales}</td>}
+                  {visibleColumns.sales30 && (
+                    <td className="col-num">
+                      AED {Math.round(
+                        last30SalesByAsin[row.asin] != null
+                          ? last30SalesByAsin[row.asin]
+                          : Number(row.last30DaysSales) || 0,
+                      ).toLocaleString()}
+                    </td>
+                  )}
                   {visibleColumns.dos && <td className="col-num">{row.dos}</td>}
                   {visibleColumns.instockRate && <td className="col-num">{row.instockRate}%</td>}
                   {visibleColumns.openPos && <td className="col-num">{row.openPos}</td>}
@@ -895,64 +784,6 @@ export default function Inventory() {
       </div>
 
       {renderMetricModal()}
-      {isMonthRangeDialogOpen && (
-        <div className="modal-backdrop" onClick={closeMonthRangeDialog}>
-          <div className="modal month-range-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Select Month Range</h3>
-            </div>
-            <div className="month-range-header">
-              <button
-                type="button"
-                className="month-range-nav"
-                onClick={() => setPickerYear((y) => y - 1)}
-              >
-                ‹
-              </button>
-              <div className="month-range-year">{pickerYear}</div>
-              <button
-                type="button"
-                className="month-range-nav"
-                onClick={() => setPickerYear((y) => y + 1)}
-              >
-                ›
-              </button>
-            </div>
-            <div className="month-grid">
-              {MONTH_LABELS.map((label, index) => {
-                const inRange = isMonthInRange(index);
-                const isEdge = isMonthEdge(index);
-                return (
-                  <button
-                    key={label}
-                    type="button"
-                    className={`month-cell ${inRange ? 'in-range' : ''} ${isEdge ? 'edge' : ''}`}
-                    onClick={() => handleMonthClick(index)}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="month-range-actions">
-              <button
-                type="button"
-                className="btn-text"
-                onClick={closeMonthRangeDialog}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={confirmMonthRange}
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
+import ErrorBoundary from './components/ErrorBoundary';
 import ExecutiveSummary from './pages/sections/ExecutiveSummary';
 import Revenue from './pages/sections/Revenue';
 import Inventory from './pages/sections/Inventory';
@@ -27,21 +28,39 @@ function PublicRedirect({ children }) {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<PublicRedirect><Login /></PublicRedirect>} />
-      <Route path="/signup" element={<PublicRedirect><Signup /></PublicRedirect>} />
-      <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>}>
-        <Route index element={<Navigate to="executive-summary" replace />} />
-        <Route path="executive-summary" element={<ExecutiveSummary />} />
-        <Route path="revenue" element={<Revenue />} />
-        <Route path="inventory" element={<Inventory />} />
-        <Route path="buybox" element={<Buybox />} />
-        <Route path="marketing" element={<Marketing />} />
-        <Route path="product-details" element={<ProductDetails />} />
-        <Route path="profile" element={<Profile />} />
-      </Route>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
-    </Routes>
+    <ErrorBoundary fallbackTitle="The application failed to render.">
+      <Routes>
+        <Route path="/login" element={<PublicRedirect><Login /></PublicRedirect>} />
+        <Route path="/signup" element={<PublicRedirect><Signup /></PublicRedirect>} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <ErrorBoundary fallbackTitle="Dashboard failed to render.">
+                <Dashboard />
+              </ErrorBoundary>
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="executive-summary" replace />} />
+          <Route
+            path="executive-summary"
+            element={
+              <ErrorBoundary fallbackTitle="Executive Summary failed to render.">
+                <ExecutiveSummary />
+              </ErrorBoundary>
+            }
+          />
+          <Route path="revenue" element={<Revenue />} />
+          <Route path="inventory" element={<Inventory />} />
+          <Route path="buybox" element={<Buybox />} />
+          <Route path="marketing" element={<Marketing />} />
+          <Route path="product-details" element={<ProductDetails />} />
+          <Route path="profile" element={<Profile />} />
+        </Route>
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </ErrorBoundary>
   );
 }

@@ -12,13 +12,6 @@ const DATE_FILTER_OPTIONS = [
   { id: 'CUSTOM_RANGE', label: 'Custom Range' },
 ];
 
-const SALES_CHANNEL_OPTIONS = [
-  { id: '', label: 'All' },
-  { id: 'OVERALL', label: 'Overall' },
-  { id: 'VC', label: 'VC' },
-  { id: 'SC', label: 'SC' },
-];
-
 const OTHER_COLUMNS = [
   'Date',
   'Available Inventory',
@@ -35,7 +28,7 @@ const OTHER_COLUMNS = [
   'ACoS',
   'Overall Unit Sold',
   'Overall Revenue',
-  'TACoS',
+  'TACOS',
   'Organic Unit Sold',
   'Organic Revenue',
   'NTB Unit Sold',
@@ -156,11 +149,9 @@ const PERFORMANCE_METRIC_OPTIONS = [
   { id: 'acos', label: 'ACoS', color: '#4285f4', format: 'percent', axis: 'right' },
   { id: 'overallUnitSold', label: 'Overall Unit Sold', color: '#10b981', format: 'integer', axis: 'right' },
   { id: 'overallRevenue', label: 'Overall Revenue', color: '#14b8a6', format: 'currency', axis: 'left' },
-  { id: 'tacos', label: 'TACoS', color: '#facc15', format: 'percent', axis: 'right' },
+  { id: 'tacos', label: 'TACOS', color: '#facc15', format: 'percent', axis: 'right' },
   { id: 'organicUnitSold', label: 'Organic Unit Sold', color: '#4ade80', format: 'integer', axis: 'right' },
   { id: 'organicRevenue', label: 'Organic Revenue', color: '#2dd4bf', format: 'currency', axis: 'left' },
-  { id: 'ntbUnitSold', label: 'NTB Unit Sold', color: '#a855f7', format: 'integer', axis: 'right' },
-  { id: 'ntbRevenue', label: 'NTB Revenue', color: '#ec4899', format: 'currency', axis: 'left' },
 ];
 
 function MarketingPerformanceTooltip({ active, payload, label }) {
@@ -187,7 +178,12 @@ function MarketingPerformanceTooltip({ active, payload, label }) {
             Total cost
           </span>
           <span style={{ fontWeight: 600 }}>
-            {point.totalCost != null ? `$${point.totalCost.toLocaleString()}` : '—'}
+            {point.totalCost != null
+              ? `AED ${Number(point.totalCost).toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}`
+              : '—'}
           </span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -239,7 +235,7 @@ const CAMPAIGN_DETAIL_OTHER_COLUMNS = [
   'ACoS',
   'Overall Unit Sold',
   'Overall Revenue',
-  'TACoS',
+  'TACOS',
   'Organic Unit Sold',
   'Organic Revenue',
   'NTB Unit Sold',
@@ -266,17 +262,17 @@ export default function Marketing() {
   });
   const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
   const [comparison, setComparison] = useState(null);
+  const [campaignFilters, setCampaignFilters] = useState({
+    campaignType: '',
+    salesChannel: '',
+    dateRange: 'CURRENT_MONTH',
+    campaignName: '',
+    portfolio: '',
+  });
   const [skuGroupFilter, setSkuGroupFilter] = useState('');
   const [skuViewOtherColumns, setSkuViewOtherColumns] = useState(
     OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: false }), {}),
   );
-  const [campaignFilters, setCampaignFilters] = useState({
-    campaignType: '',
-    campaignName: '',
-    portfolio: '',
-    salesChannel: '',
-    dateRange: 'CURRENT_MONTH',
-  });
   const [campaignOtherColumns, setCampaignOtherColumns] = useState(
     OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: false }), {}),
   );
@@ -286,7 +282,7 @@ export default function Marketing() {
   const [campaignGroupFilter, setCampaignGroupFilter] = useState('');
   const [showCampaignDetailColumnPicker, setShowCampaignDetailColumnPicker] = useState(false);
   const [showSkuViewColumnPicker, setShowSkuViewColumnPicker] = useState(false);
-  const [performanceCards, setPerformanceCards] = useState(['adSpend', 'overallRevenue', 'tacos', 'ntbUnitSold']);
+  const [performanceCards, setPerformanceCards] = useState(['adSpend', 'overallRevenue', 'tacos', 'organicUnitSold']);
   const [campaignPerformanceCards, setCampaignPerformanceCards] = useState(['adSpend', 'overallRevenue', 'clicks', 'impressions']);
   const [skuPage, setSkuPage] = useState(1);
   const [skuPageSize, setSkuPageSize] = useState(20);
@@ -304,8 +300,7 @@ export default function Marketing() {
     if (campaignFilters.campaignType) params.campaignType = campaignFilters.campaignType;
     if (campaignFilters.campaignName) params.campaignName = campaignFilters.campaignName;
     if (campaignFilters.portfolio) params.campaignPortfolio = campaignFilters.portfolio;
-    // For campaign-level channel filter, treat "Overall" as all channels (no filter).
-    if (campaignFilters.salesChannel && campaignFilters.salesChannel !== 'OVERALL') {
+    if (campaignFilters.salesChannel) {
       params.campaignSalesChannel = campaignFilters.salesChannel;
     }
     dashboardApi
@@ -338,10 +333,65 @@ export default function Marketing() {
   ]);
 
   const metrics = data && !data.comingSoon && data.metrics ? data.metrics : {};
+
+  const sumByKey = (rows, keys) => {
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const keyList = Array.isArray(keys) ? keys : [keys];
+    let sum = 0;
+    let sawNumber = false;
+    for (const r of rows) {
+      if (!r) continue;
+      for (const k of keyList) {
+        if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+        const n = Number(r[k]);
+        if (Number.isNaN(n)) continue;
+        sum += n;
+        sawNumber = true;
+        break;
+      }
+    }
+    return sawNumber ? sum : null;
+  };
+
+  const safePositive = (value) => {
+    if (value == null) return null;
+    const n = Number(value);
+    if (Number.isNaN(n) || n <= 0) return null;
+    return n;
+  };
+
+  const chartDataForTotals =
+    data && !data.comingSoon && Array.isArray(data.chartData) && data.chartData.length > 0
+      ? data.chartData
+      : MARKETING_CHART_DATA;
+
   const adSpend = metrics.adSpend ?? '—';
   const adRevenuePerUnit = metrics.adRevenuePerUnit ?? '—';
+
+  const adRevenueFromMetrics =
+    safePositive(metrics.ads_sales) ??
+    safePositive(metrics.adSales);
+  const adRevenueFromSeries = safePositive(
+    sumByKey(chartDataForTotals, ['ads_sales', 'adSales', 'ad_sales']),
+  );
+  const adRevenue =
+    adRevenueFromMetrics ??
+    adRevenueFromSeries ??
+    adRevenuePerUnit;
+
+  const overallRevenueFromMetrics =
+    safePositive(metrics.total_sales) ??
+    safePositive(metrics.overallRevenue);
+  const overallRevenueFromSeries = safePositive(
+    sumByKey(chartDataForTotals, ['total_sales', 'overallRevenue', 'totalSales']),
+  );
+  const overallRevenue =
+    overallRevenueFromMetrics ??
+    overallRevenueFromSeries ??
+    '—';
   const overallRevenuePerUnit = metrics.overallRevenuePerUnit ?? '—';
-  const acos = metrics.acos != null ? `${metrics.acos}%` : '—';
+  const tacos =
+    metrics.tacos != null && !Number.isNaN(Number(metrics.tacos)) ? `${Number(metrics.tacos).toFixed(2)}%` : '—';
 
   const hasFiltersToClear =
     dateFilterType !== 'CURRENT_MONTH' ||
@@ -360,27 +410,34 @@ export default function Marketing() {
     const fallback = { value: '—', type: 'neutral' };
     const fmt = (pct) => {
       if (pct == null || Number.isNaN(pct)) return '—';
-      const sign = pct >= 0 ? '+' : '';
-      return `${sign}${pct}%`;
+      const value = Number(pct);
+      if (Number.isNaN(value)) return '—';
+      if (value >= 0) return `↑${value.toFixed(2)}%`;
+      return `↓${Math.abs(value).toFixed(2)}%`;
     };
     const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
-    if (!comparison) return { adSpend: fallback, adRevenuePerUnit: fallback, overallRevenuePerUnit: fallback, acos: fallback };
+    if (!comparison) {
+      return {
+        adSpend: fallback,
+        adRevenuePerUnit: fallback,
+        overallRevenue: fallback,
+        overallRevenuePerUnit: fallback,
+        tacos: fallback,
+      };
+    }
     return {
       adSpend: { value: fmt(comparison.adSpend?.pctChange), type: type(comparison.adSpend?.pctChange) },
       adRevenuePerUnit: { value: fmt(comparison.adRevenuePerUnit?.pctChange), type: type(comparison.adRevenuePerUnit?.pctChange) },
+      overallRevenue: { value: fmt(comparison.overallRevenue?.pctChange), type: type(comparison.overallRevenue?.pctChange) },
       overallRevenuePerUnit: { value: fmt(comparison.overallRevenuePerUnit?.pctChange), type: type(comparison.overallRevenuePerUnit?.pctChange) },
-      acos: { value: fmt(comparison.acos?.pctChange), type: type(comparison.acos?.pctChange) },
+      tacos: { value: fmt(comparison.tacos?.pctChange), type: type(comparison.tacos?.pctChange) },
     };
   })();
 
   const dataUpdatedDate =
     data?.updatedAt
-      ? new Date(data.updatedAt).toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-        })
-      : '23rd Feb 2025';
+      ? String(data.updatedAt).split('T')[0]
+      : '2025-02-23';
 
   const chartData =
     data && !data.comingSoon && Array.isArray(data.chartData) && data.chartData.length > 0
@@ -455,9 +512,49 @@ export default function Marketing() {
 
   const campaignMetrics = data && !data.comingSoon && data.campaignMetrics ? data.campaignMetrics : {};
   const campaignAdSpend = campaignMetrics.adSpend ?? '—';
-  const campaignAdRevenuePerUnit = campaignMetrics.adRevenuePerUnit ?? '—';
-  const campaignOverallRevenuePerUnit = campaignMetrics.overallRevenuePerUnit ?? '—';
-  const campaignAcos = campaignMetrics.acos != null ? `${campaignMetrics.acos}%` : '—';
+  const campaignChartDataForTotals =
+    data && !data.comingSoon && Array.isArray(data.campaignChartData) && data.campaignChartData.length > 0
+      ? data.campaignChartData
+      : chartDataForTotals;
+  const campaignAdRevenueFromMetrics =
+    safePositive(campaignMetrics.ads_sales) ??
+    safePositive(campaignMetrics.adSales);
+  const campaignAdRevenueFromSeries = safePositive(
+    sumByKey(campaignChartDataForTotals, ['ads_sales', 'adSales', 'ad_sales']),
+  );
+  const campaignAdRevenue =
+    campaignAdRevenueFromMetrics ??
+    campaignAdRevenueFromSeries ??
+    campaignMetrics.adRevenuePerUnit ??
+    '—';
+
+  const campaignOverallRevenueFromMetrics =
+    safePositive(campaignMetrics.total_sales) ??
+    safePositive(campaignMetrics.overallRevenue);
+  const campaignOverallRevenueFromSeries = safePositive(
+    sumByKey(campaignChartDataForTotals, ['total_sales', 'overallRevenue', 'totalSales']),
+  );
+  const campaignOverallRevenue =
+    campaignOverallRevenueFromMetrics ??
+    campaignOverallRevenueFromSeries ??
+    campaignMetrics.overallRevenuePerUnit ??
+    '—';
+
+  const campaignTacosFromSeries = (() => {
+    const spend = sumByKey(campaignChartDataForTotals, ['adSpend', 'ads_spend', 'ad_spend']);
+    const revenue = sumByKey(campaignChartDataForTotals, ['total_sales', 'overallRevenue', 'totalSales']);
+    if (!spend || !revenue || Number.isNaN(spend) || Number.isNaN(revenue)) return null;
+    const pct = (spend / revenue) * 100;
+    return Number.isFinite(pct) ? pct : null;
+  })();
+
+  // Prefer campaign-level TACOS (respects campaign filters), then series-derived TACOS, then overall TACOS.
+  const campaignTacos =
+    campaignMetrics.tacos != null && !Number.isNaN(Number(campaignMetrics.tacos))
+      ? `${Number(campaignMetrics.tacos).toFixed(2)}%`
+      : campaignTacosFromSeries != null
+      ? `${campaignTacosFromSeries.toFixed(2)}%`
+      : tacos;
 
   const campaignRows = data && !data.comingSoon && Array.isArray(data.campaignRows) ? data.campaignRows : [];
 
@@ -465,6 +562,7 @@ export default function Marketing() {
     () => Array.from(new Set(campaignRows.map((r) => r.campaignType).filter(Boolean))),
     [campaignRows],
   );
+  const campaignSalesChannelOptions = salesChannelOptions;
   const campaignNameOptions = useMemo(
     () => Array.from(new Set(campaignRows.map((r) => r.campaignName).filter(Boolean))),
     [campaignRows],
@@ -487,9 +585,8 @@ export default function Marketing() {
       base = base.filter((r) => r.portfolio === campaignFilters.portfolio);
     }
     if (campaignFilters.salesChannel) {
-      base = base.filter((r) =>
-        String(r.salesChannel || '') ===
-        (campaignFilters.salesChannel === 'OVERALL' ? '' : campaignFilters.salesChannel),
+      base = base.filter(
+        (r) => String(r.salesChannel || '') === String(campaignFilters.salesChannel),
       );
     }
     if (campaignFilters.dateRange) {
@@ -578,7 +675,10 @@ export default function Marketing() {
 
     switch (config.format) {
       case 'currency':
-        return `$${raw.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        return `AED ${raw.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
       case 'percent':
         return `${raw.toFixed(2)}%`;
       case 'integer':
@@ -601,13 +701,59 @@ export default function Marketing() {
 
     switch (config.format) {
       case 'currency':
-        return `$${raw.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+        return `AED ${raw.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
       case 'percent':
         return `${raw.toFixed(2)}%`;
       case 'integer':
       default:
         return raw.toLocaleString();
     }
+  };
+
+  const formatAed = (value) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (value == null || Number.isNaN(num)) return value ?? '—';
+    return `AED ${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const formatPercent2 = (value) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (value == null || Number.isNaN(num)) return value ?? '—';
+    return `${num.toFixed(2)}%`;
+  };
+
+  const formatInt = (value) => {
+    const num = typeof value === 'number' ? value : Number(value);
+    if (value == null || Number.isNaN(num)) return value ?? '—';
+    return num.toLocaleString();
+  };
+
+  const formatCampaignTableCell = (col, value) => {
+    const currencyCols = new Set([
+      'CPC',
+      'Ad Spend',
+      'Ad Sales',
+      'Overall Revenue',
+      'Organic Revenue',
+      'NTB Revenue',
+    ]);
+    const percentCols = new Set(['CTR', 'CVR', 'ACoS', 'TACOS']);
+    const intCols = new Set([
+      'Impressions',
+      'Clicks',
+      'Ad Unit Sold',
+      'Overall Unit Sold',
+      'Organic Unit Sold',
+      'NTB Unit Sold',
+    ]);
+
+    if (currencyCols.has(col)) return formatAed(value);
+    if (percentCols.has(col)) return formatPercent2(value);
+    if (intCols.has(col)) return formatInt(value);
+    return value ?? '—';
   };
 
   const handlePerformanceCardChange = (index, nextId) => {
@@ -630,10 +776,6 @@ export default function Marketing() {
 
   return (
     <>
-      <div className="exec-header-row" style={{ marginBottom: '0.5rem' }}>
-        <span className="exec-updated-text">Data updated as of {dataUpdatedDate}</span>
-      </div>
-
       <div className="card marketing-filters-card">
         <div className="filter-row filter-row-one">
           <div className="filter-group">
@@ -738,44 +880,144 @@ export default function Marketing() {
       </div>
 
       <div className="card">
-        <h3>Key Marketing Metrics</h3>
+        <div className="exec-kpi-top">
+          <h3 className="exec-kpi-title">Key Marketing Metrics</h3>
+          {dataUpdatedDate && (
+            <span className="exec-updated-text">
+              <span className="pulse-dot" />
+              Data updated as of <strong>{dataUpdatedDate}</strong>
+            </span>
+          )}
+        </div>
         <div className="kpi-grid revenue-kpi-grid">
           <div className="kpi-item kpi-green">
             <div className="label">Ad Spend</div>
             <div className="value value-primary">
-              {typeof adSpend === 'number' ? adSpend.toLocaleString() : adSpend}
+              {typeof adSpend === 'number'
+                ? `AED ${adSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : adSpend}
               <span className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.adSpend.value})
               </span>
             </div>
             <div className="value-secondary">vs last period</div>
           </div>
-          <div className="kpi-item kpi-blue">
-            <div className="label">Ad Revenue/Unit</div>
-            <div className="value value-primary">
-              {typeof adRevenuePerUnit === 'number' ? adRevenuePerUnit.toLocaleString() : adRevenuePerUnit}
-              <span className={`kpi-trend-inline ${kpiTrends.adRevenuePerUnit.type === 'negative' ? 'negative' : kpiTrends.adRevenuePerUnit.type === 'neutral' ? 'neutral' : ''}`}>
+          <div
+            className="kpi-item kpi-blue"
+            style={{
+              borderRadius: 16,
+              border: '1px solid rgba(148,163,184,0.28)',
+              boxShadow: '0 14px 35px rgba(15,23,42,0.10)',
+              alignItems: 'flex-start',
+              padding: '16px 20px',
+            }}
+          >
+            <div
+              className="label"
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: '#6b7280',
+                marginBottom: 8,
+              }}
+            >
+              Ad Revenue
+            </div>
+            <div
+              className="value value-primary"
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 6,
+                fontSize: 22,
+              }}
+            >
+              <span>
+                {typeof adRevenue === 'number'
+                  ? `AED ${adRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : adRevenue}
+              </span>
+              <span
+                className={`kpi-trend-inline ${
+                  kpiTrends.adRevenuePerUnit.type === 'negative'
+                    ? 'negative'
+                    : kpiTrends.adRevenuePerUnit.type === 'neutral'
+                    ? 'neutral'
+                    : ''
+                }`}
+                style={{ fontSize: 14 }}
+              >
                 ({kpiTrends.adRevenuePerUnit.value})
               </span>
             </div>
-            <div className="value-secondary">vs last period</div>
+            <div
+              className="value-secondary"
+              style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}
+            >
+              vs last period
+            </div>
           </div>
-          <div className="kpi-item kpi-amber">
-            <div className="label">Overall Revenue/Unit</div>
-            <div className="value value-primary">
-              {typeof overallRevenuePerUnit === 'number' ? overallRevenuePerUnit.toLocaleString() : overallRevenuePerUnit}
-              <span className={`kpi-trend-inline ${kpiTrends.overallRevenuePerUnit.type === 'negative' ? 'negative' : kpiTrends.overallRevenuePerUnit.type === 'neutral' ? 'neutral' : ''}`}>
-                ({kpiTrends.overallRevenuePerUnit.value})
+          <div
+            className="kpi-item kpi-amber"
+            style={{
+              borderRadius: 16,
+              border: '1px solid rgba(148,163,184,0.28)',
+              boxShadow: '0 14px 35px rgba(15,23,42,0.10)',
+              alignItems: 'flex-start',
+              padding: '16px 20px',
+            }}
+          >
+            <div
+              className="label"
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: '#6b7280',
+                marginBottom: 8,
+              }}
+            >
+              Overall Revenue
+            </div>
+            <div
+              className="value value-primary"
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 6,
+                fontSize: 22,
+              }}
+            >
+              <span>
+                {typeof overallRevenue === 'number'
+                  ? `AED ${overallRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : overallRevenue}
+              </span>
+              <span
+                className={`kpi-trend-inline ${
+                  kpiTrends.overallRevenue.type === 'negative'
+                    ? 'negative'
+                    : kpiTrends.overallRevenue.type === 'neutral'
+                    ? 'neutral'
+                    : ''
+                }`}
+                style={{ fontSize: 14 }}
+              >
+                ({kpiTrends.overallRevenue.value})
               </span>
             </div>
-            <div className="value-secondary">vs last period</div>
+            <div
+              className="value-secondary"
+              style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}
+            >
+              vs last period
+            </div>
           </div>
           <div className="kpi-item kpi-violet">
-            <div className="label">ACoS</div>
+            <div className="label">TACOS</div>
             <div className="value value-primary">
-              {acos}
-              <span className={`kpi-trend-inline ${kpiTrends.acos.type === 'negative' ? 'negative' : kpiTrends.acos.type === 'neutral' ? 'neutral' : ''}`}>
-                ({kpiTrends.acos.value})
+              {tacos}
+              <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'negative' ? 'negative' : kpiTrends.tacos.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.tacos.value})
               </span>
             </div>
             <div className="value-secondary">vs last period</div>
@@ -872,7 +1114,14 @@ export default function Marketing() {
                     tickLine={false}
                     axisLine={false}
                     tick={{ fontSize: 11, fill: '#4b5563' }}
-                    tickFormatter={(v) => `$${v}`}
+                    tickFormatter={(v) =>
+                      v == null
+                        ? ''
+                        : `AED ${Number(v).toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}`
+                    }
                   />
                   <YAxis
                     yAxisId="right"
@@ -1069,14 +1318,15 @@ export default function Marketing() {
             </select>
           </div>
           <div className="filter-group">
-            <label>Sales Channel (Overall/VC/SC)</label>
+            <label>Sales Channel</label>
             <select
               value={campaignFilters.salesChannel}
               onChange={(e) => setCampaignFilters((f) => ({ ...f, salesChannel: e.target.value }))}
               aria-label="Sales Channel"
             >
-              {SALES_CHANNEL_OPTIONS.map((opt) => (
-                <option key={opt.id || 'all'} value={opt.id}>{opt.label}</option>
+              <option value="">All</option>
+              {campaignSalesChannelOptions.map((ch) => (
+                <option key={ch} value={ch}>{ch}</option>
               ))}
             </select>
           </div>
@@ -1128,23 +1378,49 @@ export default function Marketing() {
         <div className="kpi-grid revenue-kpi-grid">
           <div className="kpi-item kpi-green">
             <div className="label">Ad Spend</div>
-            <div className="value value-primary">{typeof campaignAdSpend === 'number' ? campaignAdSpend.toLocaleString() : campaignAdSpend}</div>
-            <div className="value-secondary">—</div>
+            <div className="value value-primary">
+              {typeof campaignAdSpend === 'number'
+                ? `AED ${campaignAdSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : campaignAdSpend}
+              <span className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.adSpend.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
           </div>
           <div className="kpi-item kpi-blue">
-            <div className="label">Ad Revenue/Unit</div>
-            <div className="value value-primary">{typeof campaignAdRevenuePerUnit === 'number' ? campaignAdRevenuePerUnit.toLocaleString() : campaignAdRevenuePerUnit}</div>
-            <div className="value-secondary">—</div>
+            <div className="label">Ad Revenue</div>
+            <div className="value value-primary">
+              {typeof campaignAdRevenue === 'number'
+                ? `AED ${campaignAdRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : campaignAdRevenue}
+              <span className={`kpi-trend-inline ${kpiTrends.adRevenuePerUnit.type === 'negative' ? 'negative' : kpiTrends.adRevenuePerUnit.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.adRevenuePerUnit.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
           </div>
           <div className="kpi-item kpi-amber">
-            <div className="label">Overall Revenue/Unit</div>
-            <div className="value value-primary">{typeof campaignOverallRevenuePerUnit === 'number' ? campaignOverallRevenuePerUnit.toLocaleString() : campaignOverallRevenuePerUnit}</div>
-            <div className="value-secondary">—</div>
+            <div className="label">Overall Revenue</div>
+            <div className="value value-primary">
+              {typeof campaignOverallRevenue === 'number'
+                ? `AED ${campaignOverallRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : campaignOverallRevenue}
+              <span className={`kpi-trend-inline ${kpiTrends.overallRevenue.type === 'negative' ? 'negative' : kpiTrends.overallRevenue.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.overallRevenue.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
           </div>
           <div className="kpi-item kpi-violet">
-            <div className="label">ACoS</div>
-            <div className="value value-primary">{campaignAcos}</div>
-            <div className="value-secondary">—</div>
+            <div className="label">TACOS</div>
+            <div className="value value-primary">
+              {campaignTacos}
+              <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'negative' ? 'negative' : kpiTrends.tacos.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.tacos.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
           </div>
         </div>
         <div className="marketing-graph-row">
@@ -1219,7 +1495,14 @@ export default function Marketing() {
                       tickLine={false}
                       axisLine={false}
                       tick={{ fontSize: 11, fill: '#4b5563' }}
-                      tickFormatter={(v) => `$${v}`}
+                      tickFormatter={(v) =>
+                        v == null
+                          ? ''
+                          : `AED ${Number(v).toLocaleString(undefined, {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}`
+                      }
                     />
                     <YAxis
                       yAxisId="right"
@@ -1354,17 +1637,17 @@ export default function Marketing() {
                   <tr key={row.id ?? idx}>
                     <td>{row.campaignType ?? '—'}</td>
                     <td>{row.campaignName ?? '—'}</td>
-                    <td className="col-num">{row.impressions ?? '—'}</td>
-                    <td className="col-num">{row.clicks ?? '—'}</td>
-                    <td className="col-num">{row.CTR ?? '—'}</td>
-                    <td className="col-num">{row.CPC ?? '—'}</td>
-                    <td className="col-num">{row.CVR ?? '—'}</td>
-                    <td className="col-num">{row['Ad Spend'] ?? '—'}</td>
-                    <td className="col-num">{row['Ad Unit Sold'] ?? '—'}</td>
-                    <td className="col-num">{row['Ad Sales'] ?? '—'}</td>
+                    <td className="col-num">{formatCampaignTableCell('Impressions', row.impressions)}</td>
+                    <td className="col-num">{formatCampaignTableCell('Clicks', row.clicks)}</td>
+                    <td className="col-num">{formatCampaignTableCell('CTR', row.CTR)}</td>
+                    <td className="col-num">{formatCampaignTableCell('CPC', row.CPC)}</td>
+                    <td className="col-num">{formatCampaignTableCell('CVR', row.CVR)}</td>
+                    <td className="col-num">{formatCampaignTableCell('Ad Spend', row['Ad Spend'])}</td>
+                    <td className="col-num">{formatCampaignTableCell('Ad Unit Sold', row['Ad Unit Sold'])}</td>
+                    <td className="col-num">{formatCampaignTableCell('Ad Sales', row['Ad Sales'])}</td>
                     {CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).map((col) => (
                       <td key={col} className="col-num">
-                        {row[col] ?? '—'}
+                        {formatCampaignTableCell(col, row[col])}
                       </td>
                     ))}
                   </tr>

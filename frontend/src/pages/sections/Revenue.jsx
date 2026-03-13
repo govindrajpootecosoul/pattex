@@ -27,6 +27,7 @@ const KPI_TRENDS_FALLBACK = {
   ad: { value: '—', type: 'neutral' },
   organic: { value: '—', type: 'neutral' },
   tacos: { value: '—', type: 'neutral' },
+  adSpend: { value: '—', type: 'neutral' },
 };
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -59,6 +60,64 @@ const getDateRangeForFilter = (dateFilterType, customStart, customEnd) => {
   }
   return null;
 };
+
+/** Current vs comparison period month lists (mirrors backend; T-3 for "current"). */
+function getPeriodMonths(dateFilterType, customStart, customEnd) {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  now.setDate(now.getDate() - 3);
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  function monthList(startY, startM, count) {
+    const list = [];
+    const d = new Date(startY, startM, 1);
+    for (let i = 0; i < count; i++) {
+      list.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      d.setMonth(d.getMonth() + 1);
+    }
+    return list;
+  }
+  if (dateFilterType === 'CURRENT_MONTH') {
+    return { current: monthList(y, m, 1), comparison: monthList(y, m - 1, 1) };
+  }
+  if (dateFilterType === 'PREVIOUS_MONTH') {
+    return { current: monthList(y, m - 1, 1), comparison: monthList(y, m - 2, 1) };
+  }
+  if (dateFilterType === 'CUSTOM_RANGE' && customStart) {
+    const [sy, sm] = customStart.split('-').map(Number);
+    const startDate = new Date(sy, (sm || 1) - 1, 1);
+    let endDate;
+    if (customEnd && customEnd >= customStart) {
+      const [ey, em] = customEnd.split('-').map(Number);
+      endDate = new Date(ey, (em || 1) - 1, 1);
+    } else {
+      endDate = new Date(startDate);
+    }
+    const current = [];
+    const d = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+    const end = endDate.getTime();
+    while (d.getTime() <= end) {
+      current.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      d.setMonth(d.getMonth() + 1);
+    }
+    const len = current.length;
+    const compStart = new Date(startDate.getFullYear(), startDate.getMonth() - 1, 1);
+    return { current, comparison: monthList(compStart.getFullYear(), compStart.getMonth(), len) };
+  }
+  if (dateFilterType === 'CURRENT_YEAR') {
+    return { current: monthList(y, 0, 12), comparison: monthList(y - 1, 0, 12) };
+  }
+  if (dateFilterType === 'PREVIOUS_YEAR') {
+    return { current: monthList(y - 1, 0, 12), comparison: monthList(y - 2, 0, 12) };
+  }
+  return null;
+}
+
+function pctChange(currentVal, previousVal) {
+  if (previousVal == null || previousVal === 0 || !Number.isFinite(previousVal)) return null;
+  if (currentVal == null || !Number.isFinite(currentVal)) return null;
+  return ((currentVal - previousVal) / previousVal) * 100;
+}
 
 const toYearMonth = (date) => {
   if (!date) return '';
@@ -97,6 +156,7 @@ export default function Revenue() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [comparison, setComparison] = useState(null);
+  const [updatedAt, setUpdatedAt] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,7 +170,10 @@ export default function Revenue() {
       .getRevenue(params)
       .then((data) => {
         if (!cancelled && data?.rows) setRevenueRows(data.rows);
-        if (!cancelled) setComparison(data?.comparison ?? null);
+        if (!cancelled) {
+          setComparison(data?.comparison ?? null);
+          setUpdatedAt(data?.updatedAt ?? null);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err?.message || 'Failed to load revenue data');
@@ -154,7 +217,7 @@ export default function Revenue() {
     [revenueRows],
   );
 
-  const applyFilters = (row) => {
+  const applyNonDateFilters = (row) => {
     if (filters.search) {
       const q = filters.search.trim().toLowerCase();
       if (q) {
@@ -173,6 +236,11 @@ export default function Revenue() {
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && row.productCategory !== filters.category) return false;
     if (filters.channel && filters.channel !== 'Overall' && row.salesChannel !== filters.channel) return false;
+    return true;
+  };
+
+  const applyFilters = (row) => {
+    if (!applyNonDateFilters(row)) return false;
     const dateRange = getDateRangeForFilter(dateFilterType, customRangeStart, customRangeEnd);
     if (!dateRange || !row.reportMonth) return true;
     return row.reportMonth >= dateRange.start && row.reportMonth <= dateRange.end;
@@ -226,6 +294,7 @@ export default function Revenue() {
         promoRevenue: 0,
         aov: 0,
         tacos: 0,
+        adsSpend: 0,
       };
     }
     const totals = filteredRows.reduce(
@@ -239,7 +308,8 @@ export default function Revenue() {
         acc.newToBrandUnit += Number(r.newToBrandUnit) || 0;
         acc.promoRevenue += (Number(r.promotionalUnit) || 0) * (Number(r.aov) || 0);
         acc.aov += Number(r.aov) || 0;
-        acc.tacos += Number(r.tacos) || 0;
+        // Ads spend: sum actual adSpend from each row (respects date + all filters)
+        acc.adsSpend += Number(r.adSpend) || 0;
         return acc;
       },
       {
@@ -252,32 +322,75 @@ export default function Revenue() {
         newToBrandUnit: 0,
         promoRevenue: 0,
         aov: 0,
-        tacos: 0,
+        adsSpend: 0,
       },
     );
     const count = filteredRows.length;
+    // TACOS = (Total Ad Spend / Total Sales) * 100 — from summed ads spend and revenue
+    const tacos = totals.overallRevenue > 0 ? (totals.adsSpend / totals.overallRevenue) * 100 : 0;
     return {
       ...totals,
       aov: totals.aov / count,
-      tacos: totals.tacos / count,
+      tacos,
     };
   }, [filteredRows]);
 
+  /** Comparison that respects date period + all filters (current vs previous period). */
+  const localComparison = useMemo(() => {
+    const periods = getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd);
+    if (!periods || !revenueRows.length) return null;
+    const currentSet = new Set(periods.current);
+    const comparisonSet = new Set(periods.comparison);
+    const currentRows = revenueRows.filter(
+      (r) => applyNonDateFilters(r) && r.reportMonth && currentSet.has(r.reportMonth),
+    );
+    const comparisonRows = revenueRows.filter(
+      (r) => applyNonDateFilters(r) && r.reportMonth && comparisonSet.has(r.reportMonth),
+    );
+    const aggregate = (rows) => {
+      let overallRevenue = 0;
+      let adRevenue = 0;
+      let organicRevenue = 0;
+      let adSpend = 0;
+      rows.forEach((r) => {
+        overallRevenue += Number(r.overallRevenue) || 0;
+        adRevenue += Number(r.adRevenue) || 0;
+        organicRevenue += Number(r.organicRevenue) || 0;
+        adSpend += Number(r.adSpend) || 0;
+      });
+      const tacos = overallRevenue > 0 ? (adSpend / overallRevenue) * 100 : 0;
+      return { overallRevenue, adRevenue, organicRevenue, adSpend, tacos };
+    };
+    const curr = aggregate(currentRows);
+    const prev = aggregate(comparisonRows);
+    const fmt = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 10) / 10);
+    return {
+      overall: { pctChange: fmt(pctChange(curr.overallRevenue, prev.overallRevenue)) },
+      ad: { pctChange: fmt(pctChange(curr.adRevenue, prev.adRevenue)) },
+      organic: { pctChange: fmt(pctChange(curr.organicRevenue, prev.organicRevenue)) },
+      tacos: { pctChange: fmt(pctChange(curr.tacos, prev.tacos)) },
+      adSpend: { pctChange: fmt(pctChange(curr.adSpend, prev.adSpend)) },
+    };
+  }, [dateFilterType, customRangeStart, customRangeEnd, revenueRows, filters.search, filters.asin, filters.productName, filters.category, filters.channel]);
+
   const kpiTrends = useMemo(() => {
-    if (!comparison) return KPI_TRENDS_FALLBACK;
+    const source = localComparison || comparison;
+    if (!source) return KPI_TRENDS_FALLBACK;
+    // Use ↑ for positive, ↓ for negative (instead of + / -)
     const fmt = (pct) => {
       if (pct == null || Number.isNaN(pct)) return '—';
-      const sign = pct >= 0 ? '+' : '';
-      return `${sign}${pct}%`;
+      if (pct >= 0) return `↑${pct}%`;
+      return `↓${Math.abs(pct)}%`;
     };
     const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
     return {
-      overall: { value: fmt(comparison.overall?.pctChange), type: type(comparison.overall?.pctChange) },
-      ad: { value: fmt(comparison.ad?.pctChange), type: type(comparison.ad?.pctChange) },
-      organic: { value: fmt(comparison.organic?.pctChange), type: type(comparison.organic?.pctChange) },
-      tacos: { value: fmt(comparison.tacos?.pctChange), type: type(comparison.tacos?.pctChange) },
+      overall: { value: fmt(source.overall?.pctChange), type: type(source.overall?.pctChange) },
+      ad: { value: fmt(source.ad?.pctChange), type: type(source.ad?.pctChange) },
+      organic: { value: fmt(source.organic?.pctChange), type: type(source.organic?.pctChange) },
+      tacos: { value: fmt(source.tacos?.pctChange), type: type(source.tacos?.pctChange) },
+      adSpend: { value: fmt(source.adSpend?.pctChange), type: type(source.adSpend?.pctChange) },
     };
-  }, [comparison]);
+  }, [localComparison, comparison]);
 
   const clearAllFilters = () => {
     setFilters({ search: '', asin: '', productName: '', category: '', channel: '' });
@@ -443,8 +556,8 @@ export default function Revenue() {
         columns = ['ASIN', 'Product Name', 'Channel', 'AOV'];
         break;
       case METRIC_IDS.TACOS:
-        title = 'TACoS – Breakdown';
-        columns = ['ASIN', 'Product Name', 'Channel', 'TACoS %'];
+        title = 'TACOS – Breakdown';
+        columns = ['ASIN', 'Product Name', 'Channel', 'TACOS %'];
         break;
       default:
         return null;
@@ -469,69 +582,76 @@ export default function Revenue() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row) => (
-                  <tr key={row.id}>
-                    {metricModal === METRIC_IDS.OVERALL && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{Number(row.overallUnit) || 0}</td>
-                        <td>{(Number(row.overallRevenue) || 0).toLocaleString()}</td>
-                      </>
-                    )}
-                    {metricModal === METRIC_IDS.AD && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{Number(row.adUnit) || 0}</td>
-                        <td>{(Number(row.adRevenue) || 0).toLocaleString()}</td>
-                      </>
-                    )}
-                    {metricModal === METRIC_IDS.ORGANIC && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{Number(row.organicUnit) || 0}</td>
-                        <td>{(Number(row.organicRevenue) || 0).toLocaleString()}</td>
-                      </>
-                    )}
-                    {metricModal === METRIC_IDS.NEW_TO_BRAND && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{Number(row.newToBrandUnit) || 0}</td>
-                      </>
-                    )}
-                    {metricModal === METRIC_IDS.PROMO && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{Number(row.promotionalUnit) || 0}</td>
-                      </>
-                    )}
-                    {metricModal === METRIC_IDS.AOV && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{(Number(row.aov) || 0).toFixed(2)}</td>
-                      </>
-                    )}
-                    {metricModal === METRIC_IDS.TACOS && (
-                      <>
-                        <td>{row.asin ?? '—'}</td>
-                        <td>{row.productName ?? '—'}</td>
-                        <td>{row.salesChannel ?? '—'}</td>
-                        <td>{(Number(row.tacos) || 0).toFixed(1)}%</td>
-                      </>
-                    )}
-                  </tr>
-                ))}
+                {filteredRows.map((row) => {
+                  const overallRevenue = Number(row.overallRevenue) || 0;
+                  const adRevenue = Number(row.adRevenue) || 0;
+                  const organicRevenue = Number(row.organicRevenue) || 0;
+                  const tacosPct = Number(row.tacos) || 0;
+
+                  return (
+                    <tr key={row.id}>
+                      {metricModal === METRIC_IDS.OVERALL && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{Number(row.overallUnit) || 0}</td>
+                          <td>AED {Math.round(overallRevenue).toLocaleString()}</td>
+                        </>
+                      )}
+                      {metricModal === METRIC_IDS.AD && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{Number(row.adUnit) || 0}</td>
+                          <td>AED {Math.round(adRevenue).toLocaleString()}</td>
+                        </>
+                      )}
+                      {metricModal === METRIC_IDS.ORGANIC && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{Number(row.organicUnit) || 0}</td>
+                          <td>AED {Math.round(organicRevenue).toLocaleString()}</td>
+                        </>
+                      )}
+                      {metricModal === METRIC_IDS.NEW_TO_BRAND && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{Number(row.newToBrandUnit) || 0}</td>
+                        </>
+                      )}
+                      {metricModal === METRIC_IDS.PROMO && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{Number(row.promotionalUnit) || 0}</td>
+                        </>
+                      )}
+                      {metricModal === METRIC_IDS.AOV && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{(Number(row.aov) || 0).toFixed(2)}</td>
+                        </>
+                      )}
+                      {metricModal === METRIC_IDS.TACOS && (
+                        <>
+                          <td>{row.asin ?? '—'}</td>
+                          <td>{row.productName ?? '—'}</td>
+                          <td>{row.salesChannel ?? '—'}</td>
+                          <td>{tacosPct.toFixed(1)}%</td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -579,6 +699,8 @@ export default function Revenue() {
       category: match?.productCategory || prev.category,
     }));
   };
+
+  const dataUpdatedDate = updatedAt ? String(updatedAt).split('T')[0] : null;
 
   if (loading) {
     return (
@@ -709,7 +831,15 @@ export default function Revenue() {
       </div>
 
       <div className="card">
-        <h3>Key Revenue Metrics</h3>
+        <div className="exec-kpi-top">
+          <h3 className="exec-kpi-title">Key Revenue Metrics</h3>
+          {dataUpdatedDate && (
+            <span className="exec-updated-text">
+              <span className="pulse-dot" />
+              Data updated as of <strong>{dataUpdatedDate}</strong>
+            </span>
+          )}
+        </div>
         <div className="kpi-grid revenue-kpi-grid">
           <button
             type="button"
@@ -718,7 +848,7 @@ export default function Revenue() {
           >
             <div className="label">Overall Unit / Revenue</div>
             <div className="value value-primary">
-              AED {summary.overallRevenue.toLocaleString()}
+              AED {Math.round(summary.overallRevenue).toLocaleString()}
               <span className={`kpi-trend-inline ${kpiTrends.overall.type === 'negative' ? 'negative' : kpiTrends.overall.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.overall.value})
               </span>
@@ -732,7 +862,7 @@ export default function Revenue() {
           >
             <div className="label">Ad Unit / Revenue</div>
             <div className="value value-primary">
-              AED {summary.adRevenue.toLocaleString()}
+              AED {Math.round(summary.adRevenue).toLocaleString()}
               <span className={`kpi-trend-inline ${kpiTrends.ad.type === 'negative' ? 'negative' : kpiTrends.ad.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.ad.value})
               </span>
@@ -746,7 +876,7 @@ export default function Revenue() {
           >
             <div className="label">Organic Unit / Revenue</div>
             <div className="value value-primary">
-              AED {summary.organicRevenue.toLocaleString()}
+              AED {Math.round(summary.organicRevenue).toLocaleString()}
               <span className={`kpi-trend-inline ${kpiTrends.organic.type === 'negative' ? 'negative' : kpiTrends.organic.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.organic.value})
               </span>
@@ -758,15 +888,25 @@ export default function Revenue() {
             className="kpi-item kpi-clickable kpi-blue"
             onClick={() => openMetricModal(METRIC_IDS.TACOS)}
           >
-            <div className="label">TACoS</div>
+            <div className="label">TACOS</div>
             <div className="value value-primary">
               {summary.tacos.toFixed(1)}%
-              <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'negative' ? 'negative' : kpiTrends.tacos.type === 'neutral' ? 'neutral' : ''}`}>
+              <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'positive' ? 'negative' : kpiTrends.tacos.type === 'negative' ? '' : 'neutral'}`}>
                 ({kpiTrends.tacos.value})
               </span>
             </div>
             <div className="value-secondary">vs last period</div>
           </button>
+          <div className="kpi-item kpi-amber">
+            <div className="label">Ads Spend</div>
+            <div className="value value-primary">
+              AED {summary.adsSpend.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+              <span className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}>
+                ({kpiTrends.adSpend.value})
+              </span>
+            </div>
+            <div className="value-secondary">vs last period</div>
+          </div>
         </div>
       </div>
 
@@ -829,48 +969,55 @@ export default function Revenue() {
                 <th className="col-num">Repeat</th>
                 <th className="col-num">Promo</th>
                 <th className="col-num">AOV</th>
-                <th className="col-num">TACoS %</th>
+                <th className="col-num">TACOS %</th>
                 <th className="cell-actions" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
-              {pagedRows.map((row) => (
-                <tr key={row.id}>
-                  <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
-                  <td>
-                    <div className="cell-product">
-                      <div className="table-thumb" aria-hidden>—</div>
-                      <div>{row.productName ?? '—'}</div>
-                    </div>
-                  </td>
-                  <td>{row.productCategory ?? '—'}</td>
-                  <td>{row.packSize ?? '—'}</td>
-                  <td>{row.salesChannel ?? '—'}</td>
-                  <td>{row.reportMonth ?? '—'}</td>
-                  <td className="col-num">{Number(row.overallUnit) || 0}</td>
-                  <td className="col-num">{(Number(row.overallRevenue) || 0).toLocaleString()}</td>
-                  <td className="col-num">{Number(row.adUnit) || 0}</td>
-                  <td className="col-num">{(Number(row.adRevenue) || 0).toLocaleString()}</td>
-                  <td className="col-num">{Number(row.organicUnit) || 0}</td>
-                  <td className="col-num">{(Number(row.organicRevenue) || 0).toLocaleString()}</td>
-                  <td className="col-num">{Number(row.newToBrandUnit) || 0}</td>
-                  <td className="col-num">{Number(row.repeatUnit) || 0}</td>
-                  <td className="col-num">{Number(row.promotionalUnit) || 0}</td>
-                  <td className="col-num">{(Number(row.aov) || 0).toFixed(2)}</td>
-                  <td className="col-num">{(Number(row.tacos) || 0).toFixed(1)}%</td>
-                  <td className="cell-actions">
-                    <button
-                      type="button"
-                      className="btn-quick-actions"
-                      onClick={() => {}}
-                      aria-label="Quick actions"
-                      title="Quick actions"
-                    >
-                      ⋮
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {pagedRows.map((row) => {
+                const overallRevenue = Number(row.overallRevenue) || 0;
+                const adRevenue = Number(row.adRevenue) || 0;
+                const organicRevenue = Number(row.organicRevenue) || 0;
+                const tacosPct = Number(row.tacos) || 0;
+
+                return (
+                  <tr key={row.id}>
+                    <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
+                    <td>
+                      <div className="cell-product">
+                        <div className="table-thumb" aria-hidden>—</div>
+                        <div>{row.productName ?? '—'}</div>
+                      </div>
+                    </td>
+                    <td>{row.productCategory ?? '—'}</td>
+                    <td>{row.packSize ?? '—'}</td>
+                    <td>{row.salesChannel ?? '—'}</td>
+                    <td>{row.reportMonth ?? '—'}</td>
+                    <td className="col-num">{Number(row.overallUnit) || 0}</td>
+                    <td className="col-num">AED {Math.round(overallRevenue).toLocaleString()}</td>
+                    <td className="col-num">{Number(row.adUnit) || 0}</td>
+                    <td className="col-num">AED {Math.round(adRevenue).toLocaleString()}</td>
+                    <td className="col-num">{Number(row.organicUnit) || 0}</td>
+                    <td className="col-num">AED {Math.round(organicRevenue).toLocaleString()}</td>
+                    <td className="col-num">{Number(row.newToBrandUnit) || 0}</td>
+                    <td className="col-num">{Number(row.repeatUnit) || 0}</td>
+                    <td className="col-num">{Number(row.promotionalUnit) || 0}</td>
+                    <td className="col-num">{(Number(row.aov) || 0).toFixed(2)}</td>
+                    <td className="col-num">{tacosPct.toFixed(1)}%</td>
+                    <td className="cell-actions">
+                      <button
+                        type="button"
+                        className="btn-quick-actions"
+                        onClick={() => {}}
+                        aria-label="Quick actions"
+                        title="Quick actions"
+                      >
+                        ⋮
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

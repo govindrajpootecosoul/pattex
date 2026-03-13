@@ -1,71 +1,208 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
-
-const COLOR_CLASSES = ['kpi-blue', 'kpi-green', 'kpi-amber', 'kpi-violet', 'kpi-rose', 'kpi-slate'];
-
-const DEFAULT_DEEP_DIVE_TABS = [
-  { key: 'declining', label: 'Products with declining sales' },
-  { key: 'increasing', label: 'Products with increasing sales' },
-  { key: 'traffic', label: 'Declining traffic products' },
-  { key: 'top_selling', label: 'Top-selling products' },
-];
-
-const DEFAULT_DEEP_DIVE_PERIODS = [
-  { key: 'prior_week', label: 'Prior week' },
-  { key: 'current_week', label: 'Current week' },
-];
-
-const DEFAULT_DEEP_DIVE_ITEMS = [
-  {
-    asin: 'B0DEMO001',
-    title: 'Kinetica Sports OatGain...',
-    description: 'This ASIN observed £945.15 decline in OPS',
-    change: '',
-    ctaLabel: 'View details',
-    period: 'Prior week',
-  },
-  {
-    asin: 'B0DEMO002',
-    title: 'Kinetica Sports Creapure...',
-    description: 'This ASIN observed £872.56 decline in OPS',
-    change: '',
-    ctaLabel: 'View details',
-    period: 'Prior week',
-  },
-  {
-    asin: 'B0DEMO003',
-    title: 'Kinetica Sports Whey Pro...',
-    description: 'This ASIN observed £508.64 decline in OPS',
-    change: '',
-    ctaLabel: 'View details',
-    period: 'Prior week',
-  },
-];
+import Pagination from '../../components/Pagination';
 
 export default function ExecutiveSummary() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('');
-  const [activeDeepDivePeriod, setActiveDeepDivePeriod] = useState('prior_week');
+  const [revenueRows, setRevenueRows] = useState([]);
+  const [prevRevenueRows, setPrevRevenueRows] = useState([]);
+  const [revenueLoading, setRevenueLoading] = useState(true);
+  const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('declining');
+  const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
+  const [periodLabels, setPeriodLabels] = useState({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [asinModal, setAsinModal] = useState({ open: false, title: '', asins: [] });
+
+  const setActiveDeepDiveTabAndResetPage = (tab) => {
+    setActiveDeepDiveTab(tab);
+    setPage(1);
+  };
 
   useEffect(() => {
     dashboardApi
       .getExecutiveSummary()
       .then((payload) => {
+        if (!payload) {
+          setData(null);
+          setError('Executive Summary returned no data.');
+          return;
+        }
         setData(payload);
-        if (payload?.deepDiveTabs?.length && !activeDeepDiveTab) {
-          setActiveDeepDiveTab(payload.deepDiveTabs[0].key || payload.deepDiveTabs[0].label);
-        }
-        if (payload?.deepDivePeriods?.length && !activeDeepDivePeriod) {
-          setActiveDeepDivePeriod(
-            payload.deepDivePeriods[0].key || payload.deepDivePeriods[0].label,
-          );
-        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [activeDeepDiveTab, activeDeepDivePeriod]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRevenueLoading(true);
+    dashboardApi
+      .getRevenue({ dateFilterType, includePeriods: true })
+      .then((res) => {
+        if (cancelled) return;
+        setRevenueRows(Array.isArray(res?.currentRows) ? res.currentRows : []);
+        setPrevRevenueRows(Array.isArray(res?.comparisonRows) ? res.comparisonRows : []);
+        if (res?.periodLabels?.currentLabel && res?.periodLabels?.comparisonLabel) {
+          setPeriodLabels({
+            currentLabel: res.periodLabels.currentLabel,
+            previousLabel: res.periodLabels.comparisonLabel,
+          });
+        } else if (res?.periods?.current?.[0] && res?.periods?.comparison?.[0]) {
+          const labelFromYm = (ym) => {
+            const [y, m] = String(ym).split('-').map(Number);
+            if (!y || !m) return String(ym);
+            return new Date(y, m - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+          };
+          setPeriodLabels({
+            currentLabel: labelFromYm(res.periods.current[0]),
+            previousLabel: labelFromYm(res.periods.comparison[0]),
+          });
+        } else {
+          setPeriodLabels({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRevenueRows([]);
+        setPrevRevenueRows([]);
+        setPeriodLabels({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
+      })
+      .finally(() => {
+        if (!cancelled) setRevenueLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [dateFilterType]);
+
+  // Hooks must run consistently across renders.
+  // Compute table rows even during loading (safe defaults).
+  const deepDiveMeta = useMemo(() => {
+    return periodLabels;
+  }, [periodLabels]);
+
+  const tableRows = useMemo(() => {
+    const currentRows = Array.isArray(revenueRows) ? revenueRows : [];
+    const previousRows = Array.isArray(prevRevenueRows) ? prevRevenueRows : [];
+
+    const computePct = (curr, prev) => {
+      const c = Number(curr) || 0;
+      const p = Number(prev) || 0;
+      if (p === 0) return null; // undefined % change (new launch or both 0)
+      return ((c - p) / p) * 100;
+    };
+
+    const computeAbs = (curr, prev) => (Number(curr) || 0) - (Number(prev) || 0);
+
+    const aggByAsin = (rows) => {
+      const map = new Map();
+      rows.forEach((r) => {
+        const asin = r?.asin ? String(r.asin).trim() : '';
+        if (!asin) return;
+        const prev = map.get(asin) || {
+          asin,
+          productName: r?.productName ?? '—',
+          productCategory: r?.productCategory ?? '—',
+          packSize: r?.packSize ?? '—',
+          salesChannel: r?.salesChannel ?? '—',
+          reportMonth: r?.reportMonth ?? '—',
+          revenue: 0,
+          units: 0,
+        };
+        prev.revenue += Number(r?.overallRevenue) || 0;
+        prev.units += Number(r?.overallUnit) || 0;
+        if (!prev.productName || prev.productName === '—') prev.productName = r?.productName ?? prev.productName;
+        if (!prev.productCategory || prev.productCategory === '—') prev.productCategory = r?.productCategory ?? prev.productCategory;
+        if (!prev.packSize || prev.packSize === '—') prev.packSize = r?.packSize ?? prev.packSize;
+        if (!prev.salesChannel || prev.salesChannel === '—') prev.salesChannel = r?.salesChannel ?? prev.salesChannel;
+        if (!prev.reportMonth || prev.reportMonth === '—') prev.reportMonth = r?.reportMonth ?? prev.reportMonth;
+        map.set(asin, prev);
+      });
+      return map;
+    };
+
+    const currMap = aggByAsin(currentRows);
+    const prevMap = aggByAsin(previousRows);
+    const allAsins = new Set([...currMap.keys(), ...prevMap.keys()]);
+
+    const merged = Array.from(allAsins).map((asin) => {
+      const curr = currMap.get(asin) || { revenue: 0, units: 0 };
+      const prev = prevMap.get(asin) || { revenue: 0, units: 0 };
+      const pct = computePct(curr.revenue, prev.revenue);
+      const unitsPct = computePct(curr.units, prev.units);
+      const abs = computeAbs(curr.revenue, prev.revenue);
+      return {
+        id: asin,
+        asin,
+        productName: (curr.productName && String(curr.productName).trim()) ? curr.productName : (prev.productName || '—'),
+        productCategory: (curr.productCategory && String(curr.productCategory).trim()) ? curr.productCategory : (prev.productCategory || '—'),
+        packSize: (curr.packSize && String(curr.packSize).trim()) ? curr.packSize : (prev.packSize || '—'),
+        salesChannel: (curr.salesChannel && String(curr.salesChannel).trim()) ? curr.salesChannel : (prev.salesChannel || '—'),
+        reportMonth: (curr.reportMonth && String(curr.reportMonth).trim()) ? curr.reportMonth : '—',
+        currentRevenue: curr.revenue || 0,
+        previousRevenue: prev.revenue || 0,
+        currentUnits: curr.units || 0,
+        previousUnits: prev.units || 0,
+        pctChangeRevenue: pct,
+        pctChangeUnits: unitsPct,
+        absDiffRevenue: abs,
+      };
+    });
+
+    if (activeDeepDiveTab === 'declining') {
+      return merged
+        .filter((r) => (Number(r.currentRevenue) || 0) < (Number(r.previousRevenue) || 0))
+        .sort((a, b) => (Number(a.absDiffRevenue) || 0) - (Number(b.absDiffRevenue) || 0));
+    }
+    if (activeDeepDiveTab === 'increasing') {
+      return merged
+        .filter((r) => (Number(r.currentRevenue) || 0) > (Number(r.previousRevenue) || 0))
+        .sort((a, b) => (Number(b.absDiffRevenue) || 0) - (Number(a.absDiffRevenue) || 0));
+    }
+    if (activeDeepDiveTab === 'traffic') {
+      // Proxy "traffic" using unit decline (since Orders/PNL dataset in UI maps closest to units).
+      return merged
+        .filter((r) => r.pctChangeUnits != null && r.pctChangeUnits < 0)
+        .sort((a, b) => (a.pctChangeUnits ?? 0) - (b.pctChangeUnits ?? 0));
+    }
+    if (activeDeepDiveTab === 'top_selling') {
+      return merged
+        .slice()
+        .sort((a, b) => (b.currentRevenue ?? 0) - (a.currentRevenue ?? 0))
+        .slice(0, 10);
+    }
+
+    return merged;
+  }, [revenueRows, prevRevenueRows, activeDeepDiveTab]);
+
+  const totalRows = tableRows.length;
+  const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const startIndex = (safePage - 1) * pageSize;
+  const pagedRows = tableRows.slice(startIndex, startIndex + pageSize);
+
+  const openAsinModal = (type) => {
+    const summary = data?.poSummary || {};
+    if (!summary) return;
+    let title = '';
+    let rows = [];
+    if (type === 'OPEN_POS') {
+      title = 'OPEN POS – ASIN breakdown';
+      rows = Array.isArray(summary.openPODetails) ? summary.openPODetails : [];
+    } else if (type === 'PO_RECEIVED') {
+      title = 'PO RECEIVED – ASIN breakdown';
+      rows = Array.isArray(summary.poReceivedDetails) ? summary.poReceivedDetails : [];
+    } else if (type === 'SKU_NO_BUYBOX') {
+      title = 'SKU WT NO BUYBOX – ASIN breakdown';
+      rows = Array.isArray(summary.skuNoBuyboxDetails) ? summary.skuNoBuyboxDetails : [];
+    }
+    setAsinModal({
+      open: true,
+      title,
+      rows,
+    });
+  };
 
   if (loading) {
     return (
@@ -76,34 +213,13 @@ export default function ExecutiveSummary() {
   }
 
   if (error) return <div className="auth-error">{error}</div>;
-  if (!data) return null;
-
-  const deepDiveTabs =
-    Array.isArray(data.deepDiveTabs) && data.deepDiveTabs.length
-      ? data.deepDiveTabs
-      : DEFAULT_DEEP_DIVE_TABS;
-
-  const deepDivePeriods =
-    Array.isArray(data.deepDivePeriods) && data.deepDivePeriods.length
-      ? data.deepDivePeriods
-      : DEFAULT_DEEP_DIVE_PERIODS;
-  const activeTabConfig =
-    deepDiveTabs.find((t) => t.key === activeDeepDiveTab || t.label === activeDeepDiveTab) || null;
-  const baseDeepDiveItems =
-    (activeTabConfig?.items && activeTabConfig.items.length
-      ? activeTabConfig.items
-      : data.deepDiveItems && data.deepDiveItems.length
-      ? data.deepDiveItems
-      : DEFAULT_DEEP_DIVE_ITEMS) || [];
-  const deepDiveItems =
-    activeDeepDivePeriod && baseDeepDiveItems.length
-      ? baseDeepDiveItems.filter(
-          (item) =>
-            !item.periodKey ||
-            item.periodKey === activeDeepDivePeriod ||
-            item.period === activeDeepDivePeriod,
-        )
-      : baseDeepDiveItems;
+  if (!data) {
+    return (
+      <div className="exec-summary">
+        <div className="auth-error">Executive Summary is unavailable.</div>
+      </div>
+    );
+  }
 
   const poSummary = data.poSummary || {};
 
@@ -111,9 +227,22 @@ export default function ExecutiveSummary() {
     <div className="exec-summary">
       <header className="exec-header-row fade-in-up">
         <div className="exec-header-right">
-          <button type="button" className="exec-month-select">
-            {data.monthRange || 'Current Month'}
-          </button>
+          <select
+            className="deep-dive-period-select"
+            value={dateFilterType}
+            onChange={(e) => {
+              setDateFilterType(e.target.value);
+              setPage(1);
+            }}
+            aria-label="Date range"
+          >
+            <option value="CURRENT_DAY">Current Day</option>
+            <option value="PREVIOUS_DAY">Previous Day</option>
+            <option value="CURRENT_WEEK">Current Week</option>
+            <option value="PREVIOUS_WEEK">Previous Week</option>
+            <option value="CURRENT_MONTH">Current Month</option>
+            <option value="PREVIOUS_MONTH">Previous Month</option>
+          </select>
         </div>
       </header>
 
@@ -170,7 +299,9 @@ export default function ExecutiveSummary() {
                           </td>
                           <td className={`col-num variation-cell variation-${variationClass}`}>
                             {typeof row.variation === 'number'
-                              ? `${row.variation.toFixed(1)}%`
+                              ? row.variation >= 0
+                                ? `↑${row.variation.toFixed(1)}%`
+                                : `↓${Math.abs(row.variation).toFixed(1)}%`
                               : row.variation || '—'}
                           </td>
                         </tr>
@@ -183,144 +314,196 @@ export default function ExecutiveSummary() {
           </div>
 
           <div className="exec-top-stats">
-            <div className="exec-stat-card kpi-blue">
-              <div className="exec-stat-label">PO RECEIVED</div>
-              <div className="exec-stat-value">
-                {poSummary.poReceived != null ? poSummary.poReceived.toLocaleString() : '—'}
-              </div>
-              {poSummary.poReceivedBase != null && (
-                <div className="exec-stat-sub">AED {poSummary.poReceivedBase.toLocaleString()}</div>
-              )}
-            </div>
-            <div className="exec-stat-card kpi-green">
+            <button
+              type="button"
+              className="exec-stat-card kpi-green"
+              onClick={() => openAsinModal('OPEN_POS')}
+            >
               <div className="exec-stat-label">OPEN POS</div>
               <div className="exec-stat-value">
                 {poSummary.openPOs != null ? poSummary.openPOs.toLocaleString() : '—'}
               </div>
-              {poSummary.openPOsBase != null && (
-                <div className="exec-stat-sub">AED {poSummary.openPOsBase.toLocaleString()}</div>
-              )}
-            </div>
-            <div className="exec-stat-card kpi-amber">
-              <div className="exec-stat-label">SCHEDULED POS</div>
+            </button>
+            <button
+              type="button"
+              className="exec-stat-card kpi-blue"
+              onClick={() => openAsinModal('PO_RECEIVED')}
+            >
+              <div className="exec-stat-label">PO RECEIVED</div>
               <div className="exec-stat-value">
-                {poSummary.scheduledPOs != null ? poSummary.scheduledPOs.toLocaleString() : '—'}
+                {poSummary.poReceived != null ? poSummary.poReceived.toLocaleString() : '—'}
               </div>
-              {poSummary.scheduledPOsBase != null && (
-                <div className="exec-stat-sub">
-                  AED {poSummary.scheduledPOsBase.toLocaleString()}
-                </div>
-              )}
-            </div>
-            <div className="exec-stat-card kpi-slate">
+            </button>
+            <button
+              type="button"
+              className="exec-stat-card kpi-slate"
+              onClick={() => openAsinModal('SKU_NO_BUYBOX')}
+            >
               <div className="exec-stat-label">SKU WT NO BUYBOX</div>
               <div className="exec-stat-value">
                 {poSummary.skuNoBuybox != null ? poSummary.skuNoBuybox.toLocaleString() : '—'}
               </div>
-            </div>
+            </button>
           </div>
         </div>
       </section>
 
       <div className="exec-lower-row">
-        <div className="card exec-deep-dive fade-in-up" style={{ animationDelay: '320ms' }}>
-          <div className="exec-deep-dive-header">
+        <div
+          className="card fade-in-up"
+          style={{ animationDelay: '320ms', gridColumn: '1 / -1', minWidth: 0 }}
+        >
+          <div className="exec-deep-dive-header" style={{ marginBottom: '0.5rem' }}>
             <div>
               <h3>Deep dive your ASIN performance</h3>
-              {data.deepDiveSubtitle && (
-                <p className="section-muted">{data.deepDiveSubtitle}</p>
-              )}
+              <p className="section-muted">
+                Comparing <strong>{deepDiveMeta.currentLabel}</strong> to{' '}
+                <strong>{deepDiveMeta.previousLabel}</strong>
+              </p>
             </div>
-            <div className="exec-deep-dive-controls">
-              {deepDivePeriods.length > 0 && (
-                <select
-                  className="deep-dive-period-select"
-                  value={activeDeepDivePeriod}
-                  onChange={(e) => setActiveDeepDivePeriod(e.target.value)}
-                >
-                  {deepDivePeriods.map((p) => {
-                    const key = p.key || p.label;
-                    return (
-                      <option key={key} value={key}>
-                        {p.label || key}
-                      </option>
-                    );
-                  })}
-                </select>
-              )}
-              <button type="button" className="btn-link-muted">
-                Hide ASINs
+          </div>
+
+          <div className="deep-dive-tabs" style={{ marginBottom: '0.75rem' }}>
+            <button
+              type="button"
+              className={`deep-dive-tab ${activeDeepDiveTab === 'declining' ? 'active' : ''}`}
+              onClick={() => setActiveDeepDiveTabAndResetPage('declining')}
+            >
+              Products with declining sales
+            </button>
+            <button
+              type="button"
+              className={`deep-dive-tab ${activeDeepDiveTab === 'increasing' ? 'active' : ''}`}
+              onClick={() => setActiveDeepDiveTabAndResetPage('increasing')}
+            >
+              Products with increasing sales
+            </button>
+            <button
+              type="button"
+              className={`deep-dive-tab ${activeDeepDiveTab === 'top_selling' ? 'active' : ''}`}
+              onClick={() => setActiveDeepDiveTabAndResetPage('top_selling')}
+            >
+              Top-selling products
+            </button>
+          </div>
+          {revenueLoading ? (
+            <div className="shimmer-block" style={{ minHeight: 200 }} />
+          ) : (
+            <>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>ASIN</th>
+                      <th>Product Name</th>
+                      <th className="col-num">Revenue ({deepDiveMeta.previousLabel})</th>
+                      <th className="col-num">Revenue ({deepDiveMeta.currentLabel})</th>
+                      <th className="col-num">Abs Diff</th>
+                      <th className="col-num">% Diff</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedRows.map((row) => (
+                      <tr key={row.id}>
+                        <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
+                        <td>
+                          <div className="cell-product">
+                            <div className="table-thumb" aria-hidden>—</div>
+                            <div>{row.productName ?? '—'}</div>
+                          </div>
+                        </td>
+                        <td className="col-num">
+                          {(Number(row.previousRevenue) || 0).toLocaleString()}
+                        </td>
+                        <td className="col-num">{(Number(row.currentRevenue) || 0).toLocaleString()}</td>
+                        <td className="col-num">
+                          {(() => {
+                            const v = Number(row.absDiffRevenue) || 0;
+                            if (v >= 0) return `↑${v.toLocaleString()}`;
+                            return `↓${Math.abs(v).toLocaleString()}`;
+                          })()}
+                        </td>
+                        <td className="col-num">
+                          {row.pctChangeRevenue == null
+                            ? ((Number(row.previousRevenue) || 0) === 0 && (Number(row.currentRevenue) || 0) > 0 ? 'New' : '—')
+                            : row.pctChangeRevenue >= 0
+                              ? `↑${row.pctChangeRevenue.toFixed(1)}%`
+                              : `↓${Math.abs(row.pctChangeRevenue).toFixed(1)}%`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Pagination
+                page={safePage}
+                pageSize={pageSize}
+                total={totalRows}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+              />
+            </>
+          )}
+        </div>
+      </div>
+
+      {asinModal.open && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setAsinModal({ open: false, title: '', rows: [] })}
+        >
+          <div
+            className="modal modal-large"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>{asinModal.title}</h3>
+              <button
+                type="button"
+                className="btn-logout"
+                onClick={() => setAsinModal({ open: false, title: '', rows: [] })}
+              >
+                Close
               </button>
             </div>
-          </div>
-
-          {deepDiveTabs.length > 0 && (
-            <div className="deep-dive-tabs">
-              {deepDiveTabs.map((tab) => {
-                const key = tab.key || tab.label;
-                const isActive = key === activeDeepDiveTab;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`deep-dive-tab ${isActive ? 'active' : ''}`}
-                    onClick={() => setActiveDeepDiveTab(key)}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
+            <div className="table-wrap">
+              {!Array.isArray(asinModal.rows) || asinModal.rows.length === 0 ? (
+                <p className="section-muted">No ASINs found for this metric.</p>
+              ) : (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>ASIN</th>
+                      <th>Product Name</th>
+                      <th>Channel</th>
+                      <th className="col-num">Open POs</th>
+                      <th className="col-num">PO Received Units</th>
+                      <th>Current Owner</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {asinModal.rows.map((row) => (
+                      <tr key={row.asin}>
+                        <td>
+                          <span className="text-secondary">{row.asin}</span>
+                        </td>
+                        <td>{row.productName ?? '—'}</td>
+                        <td>{row.salesChannel ?? '—'}</td>
+                        <td className="col-num">{Number(row.openPOs) || 0}</td>
+                        <td className="col-num">{Number(row.poReceivedUnits) || 0}</td>
+                        <td>{row.currentOwner ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-          )}
-
-          <div className="deep-dive-cards">
-            {deepDiveItems.map((item, i) => (
-              <article
-                key={item.asin || i}
-                className="deep-dive-card fade-in-up"
-                style={{ animationDelay: `${80 * (i + 1)}ms` }}
-              >
-                <header className="deep-dive-card-header">
-                  <div className="deep-dive-title-block">
-                    <div className="table-thumb">{item.thumbText || item.asin || 'ASIN'}</div>
-                    <div>
-                      <div className="deep-dive-title">{item.title}</div>
-                      {item.asin && <div className="deep-dive-subtitle">{item.asin}</div>}
-                    </div>
-                  </div>
-                  {item.badge && (
-                    <span className={`badge ${item.badgeClass || 'badge-critical'}`}>
-                      {item.badge}
-                    </span>
-                  )}
-                </header>
-                {item.description && (
-                  <p className="deep-dive-description">{item.description}</p>
-                )}
-                {item.change && <div className="deep-dive-change">{item.change}</div>}
-                <footer className="deep-dive-footer">
-                  <button type="button" className="btn-primary-soft">
-                    {item.ctaLabel || 'View details'}
-                  </button>
-                  {item.period && <span className="deep-dive-period">{item.period}</span>}
-                </footer>
-              </article>
-            ))}
           </div>
         </div>
-
-        <aside className="card exec-vc-card fade-in-up" style={{ animationDelay: '360ms' }}>
-          <h3>Add details for the following (VC only)</h3>
-          <ol className="exec-vc-list">
-            <li>Buybox</li>
-            <li>Low Stock</li>
-            <li>Out of Stock</li>
-          </ol>
-          <button type="button" className="btn-primary-soft exec-vc-btn">
-            Show last 30 Days sales
-          </button>
-        </aside>
-      </div>
+      )}
     </div>
   );
 }

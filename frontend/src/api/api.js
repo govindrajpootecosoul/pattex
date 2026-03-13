@@ -44,6 +44,7 @@ export const dashboardApi = {
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
     if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
     if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.includePeriods) q.set('includePeriods', '1');
     const query = q.toString();
     return request(`/dashboard/revenue${query ? `?${query}` : ''}`);
   },

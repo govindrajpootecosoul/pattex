@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import Inventory from '../models/Inventory.js';
 import Revenue from '../models/Revenue.js';
 import Marketing from '../models/Marketing.js';
@@ -22,7 +23,10 @@ function parseNum(val) {
  * - Previous year → compare to year before that
  */
 function getPeriodMonths(dateFilterType, customStart, customEnd) {
+  // Data arrives with a T-3 lag; treat "current" as today-3 days.
   const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  now.setDate(now.getDate() - 3);
   const y = now.getFullYear();
   const m = now.getMonth(); // 0-indexed
 
@@ -81,6 +85,165 @@ function getPeriodMonths(dateFilterType, customStart, customEnd) {
   return null;
 }
 
+function toYmd(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseDateKey(value) {
+  if (!value) return '';
+  // Handles both Date objects and ISO/date-like strings.
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return toYmd(value);
+  const s = String(value);
+  // Accept `MM/DD/YYYY` or `DD/MM/YYYY` (heuristic: if first part > 12, treat as DD/MM).
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slash) {
+    const a = parseInt(slash[1], 10);
+    const b = parseInt(slash[2], 10);
+    const y = parseInt(slash[3], 10);
+    const isDayFirst = a > 12;
+    const m = isDayFirst ? b : a;
+    const d = isDayFirst ? a : b;
+    if (y && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+  // Expect `YYYY-MM-DD...`
+  if (s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const parsed = new Date(s);
+  if (!Number.isNaN(parsed.getTime())) return toYmd(parsed);
+  return '';
+}
+
+function dateMatchQuery(fieldName, dateKey) {
+  if (!dateKey) return {};
+  // Prefer string prefix match (covers strings with timestamps).
+  // If stored as Date type, also include range match.
+  const start = new Date(`${dateKey}T00:00:00.000Z`);
+  const end = new Date(`${dateKey}T23:59:59.999Z`);
+  return {
+    $or: [
+      { [fieldName]: { $regex: `^${dateKey}` } },
+      { [fieldName]: { $gte: start, $lte: end } },
+    ],
+  };
+}
+
+async function latestDateKeyForCollection(collectionName, fieldName = 'Date') {
+  const col = mongoose.connection?.db?.collection(collectionName);
+  if (!col) return '';
+  // Sort by Date descending; if Date is string `YYYY-MM-DD...` this also works lexicographically.
+  const doc = await col.findOne({}, { sort: { [fieldName]: -1 }, projection: { [fieldName]: 1 } });
+  return parseDateKey(doc?.[fieldName]);
+}
+
+function startOfWeekMonday(date) {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = d.getDay(); // 0=Sun ... 6=Sat
+  const diff = day === 0 ? -6 : 1 - day; // move to Monday
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function dateList(startDate, endDate) {
+  const list = [];
+  const d = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  d.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  while (d.getTime() <= end.getTime()) {
+    list.push(toYmd(d));
+    d.setDate(d.getDate() + 1);
+  }
+  return list;
+}
+
+function getPeriodDaysOrWeeks(dateFilterType) {
+  // Data arrives with a T-3 lag; treat "current" as today-3 days.
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  now.setDate(now.getDate() - 3);
+
+  if (dateFilterType === 'CURRENT_DAY') {
+    const current = [toYmd(now)];
+    const prev = new Date(now);
+    prev.setDate(prev.getDate() - 1);
+    const comparison = [toYmd(prev)];
+    return {
+      periodType: 'DAY',
+      current,
+      comparison,
+      labels: {
+        currentLabel: toYmd(now),
+        comparisonLabel: toYmd(prev),
+      },
+    };
+  }
+
+  if (dateFilterType === 'PREVIOUS_DAY') {
+    const currentDate = new Date(now);
+    currentDate.setDate(currentDate.getDate() - 1);
+    const comparisonDate = new Date(now);
+    comparisonDate.setDate(comparisonDate.getDate() - 2);
+    return {
+      periodType: 'DAY',
+      current: [toYmd(currentDate)],
+      comparison: [toYmd(comparisonDate)],
+      labels: {
+        currentLabel: toYmd(currentDate),
+        comparisonLabel: toYmd(comparisonDate),
+      },
+    };
+  }
+
+  if (dateFilterType === 'CURRENT_WEEK') {
+    const start = startOfWeekMonday(now);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    const prevEnd = new Date(start);
+    prevEnd.setDate(prevEnd.getDate() - 1);
+    const prevStart = new Date(prevEnd);
+    prevStart.setDate(prevStart.getDate() - 6);
+    return {
+      periodType: 'WEEK',
+      current: dateList(start, end),
+      comparison: dateList(prevStart, prevEnd),
+      labels: {
+        currentLabel: `${toYmd(start)} to ${toYmd(end)}`,
+        comparisonLabel: `${toYmd(prevStart)} to ${toYmd(prevEnd)}`,
+      },
+    };
+  }
+
+  if (dateFilterType === 'PREVIOUS_WEEK') {
+    const thisStart = startOfWeekMonday(now);
+    const thisEnd = new Date(thisStart);
+    thisEnd.setDate(thisEnd.getDate() + 6);
+    const currentEnd = new Date(thisStart);
+    currentEnd.setDate(currentEnd.getDate() - 1);
+    const currentStart = new Date(currentEnd);
+    currentStart.setDate(currentStart.getDate() - 6);
+    const comparisonEnd = new Date(currentStart);
+    comparisonEnd.setDate(comparisonEnd.getDate() - 1);
+    const comparisonStart = new Date(comparisonEnd);
+    comparisonStart.setDate(comparisonStart.getDate() - 6);
+    return {
+      periodType: 'WEEK',
+      current: dateList(currentStart, currentEnd),
+      comparison: dateList(comparisonStart, comparisonEnd),
+      labels: {
+        currentLabel: `${toYmd(currentStart)} to ${toYmd(currentEnd)}`,
+        comparisonLabel: `${toYmd(comparisonStart)} to ${toYmd(comparisonEnd)}`,
+      },
+    };
+  }
+
+  return null;
+}
+
 function aggregateRevenueRows(rows) {
   let overallUnit = 0;
   let overallRevenue = 0;
@@ -134,19 +297,36 @@ function aggregateInventoryRows(rows) {
   };
 }
 
-function aggregateBuyboxRows(rows) {
-  const total = rows.length;
-  if (!total) return { overallBuyboxPct: 0, noBuyboxSkus: 0 };
-  const withBuybox = rows.reduce((s, r) => s + (r.hasBuybox ? 1 : 0), 0);
-  const noBuyboxSkus = total - withBuybox;
-  const overallBuyboxPct = Math.round((withBuybox / total) * 100);
-  return { overallBuyboxPct, noBuyboxSkus };
+function normalizeBuyboxOwner(owner) {
+  if (owner == null) return '';
+  return String(owner).trim().toLowerCase();
 }
 
-// Static data for dashboard sections (as per requirements)
+function isAmazonAeOwner(ownerNormalized) {
+  return Boolean(ownerNormalized) && ownerNormalized.includes('amazon.ae');
+}
+
+function aggregateBuyboxRows(rows) {
+  if (!rows.length) return { overallBuyboxPct: 0, noBuyboxSkus: 0, amazonAeCount: 0 };
+  const asinToOwner = new Map();
+  rows.forEach((r) => {
+    if (r.asin) asinToOwner.set(r.asin, normalizeBuyboxOwner(r.currentBuyboxOwner));
+  });
+  const uniqueAsins = [...asinToOwner.keys()];
+  const totalAsins = uniqueAsins.length;
+  if (!totalAsins) return { overallBuyboxPct: 0, noBuyboxSkus: 0, amazonAeCount: 0 };
+  const amazonAeCount = uniqueAsins.filter((asin) => isAmazonAeOwner(asinToOwner.get(asin))).length;
+  const noBuyboxSkus = uniqueAsins.filter((asin) => !isAmazonAeOwner(asinToOwner.get(asin))).length;
+  const overallBuyboxPct = Math.round((amazonAeCount / totalAsins) * 100);
+  return { overallBuyboxPct, noBuyboxSkus, amazonAeCount };
+}
+
+// Static base data for dashboard sections (as per requirements).
+// The "dataUpdated" field is computed dynamically per request from the
+// underlying collections (e.g. Revenue, Inventory, Marketing, Buybox),
+// so it is intentionally omitted here.
 const executiveSummary = {
   title: 'Executive Summary',
-  dataUpdated: new Date().toISOString().split('T')[0],
   kpis: [
     { metric: 'Overall Revenue', target: 25000, actualBTL: 23500, actualMTD: 24200, variation: '-3.2%' },
     { metric: 'Overall Spend', target: 12000, actualBTL: 11800, actualMTD: 11500, variation: '+2.5%' },
@@ -174,7 +354,295 @@ const productDetails = {
 };
 
 // All dashboard routes return data; protected by auth
-router.get('/executive-summary', (req, res) => res.json(executiveSummary));
+router.get('/executive-summary', async (req, res) => {
+  try {
+    // Use the latest snapshot date across revenue + buybox datasets.
+    const [revenueDateKey, buyboxDateKey] = await Promise.all([
+      (async () => {
+        const latestRevenueDoc = await Revenue.findOne({}).sort({ Date: -1 }).lean();
+        return parseDateKey(latestRevenueDoc?.Date);
+      })(),
+      (async () => {
+        const latestBuyboxDoc = await Buybox.findOne({}).sort({ Date: -1 }).lean();
+        return parseDateKey(latestBuyboxDoc?.Date);
+      })(),
+    ]);
+
+    const dataUpdated =
+      [revenueDateKey, buyboxDateKey].filter(Boolean).sort().slice(-1)[0]
+      || new Date().toISOString().slice(0, 10);
+
+    // All three metrics (OPEN POS, PO RECEIVED, SKU WT NO BUYBOX)
+    // are derived from the latest snapshot in the buyboxes collection.
+    const buyboxDateKeyEffective = buyboxDateKey || dataUpdated;
+
+    // ASIN lists for the latest snapshot in buyboxes.
+    const openPODetailsPromise = (async () => {
+      // From pattex.buyboxes, column "Open POs" > 0 on latest date.
+      const match = {
+        ...dateMatchQuery('Date', buyboxDateKeyEffective),
+        $expr: {
+          $gt: [
+            {
+              $toDouble: {
+                $ifNull: ['$Open POs', 0],
+              },
+            },
+            0,
+          ],
+        },
+      };
+      const pipeline = [
+        { $match: match },
+        {
+          $group: {
+            _id: '$ASIN',
+            productName: { $first: '$Product Name' },
+            salesChannel: { $first: '$Sales Channel' },
+            openPOs: {
+              $sum: {
+                $toDouble: {
+                  $ifNull: ['$Open POs', 0],
+                },
+              },
+            },
+            poReceivedUnits: {
+              $sum: {
+                $toDouble: {
+                  $ifNull: ['$PO_received_Units', 0],
+                },
+              },
+            },
+            currentOwner: {
+              $first: {
+                $ifNull: [
+                  '$Current Owner',
+                  {
+                    $ifNull: [
+                      '$Current Owner ',
+                      {
+                        $ifNull: ['$CurrentOwner', '$currentOwner'],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            asin: '$_id',
+            productName: 1,
+            salesChannel: 1,
+            openPOs: 1,
+            poReceivedUnits: 1,
+            currentOwner: 1,
+          },
+        },
+      ];
+      const rows = await Buybox.aggregate(pipeline);
+      return rows;
+    })();
+
+    const poReceivedDetailsPromise = (async () => {
+      // From pattex.buyboxes, column "PO_received_Units" > 0 on latest date.
+      const match = {
+        ...dateMatchQuery('Date', buyboxDateKeyEffective),
+        $expr: {
+          $gt: [
+            {
+              $toDouble: {
+                $ifNull: ['$PO_received_Units', 0],
+              },
+            },
+            0,
+          ],
+        },
+      };
+      const pipeline = [
+        { $match: match },
+        {
+          $group: {
+            _id: '$ASIN',
+            productName: { $first: '$Product Name' },
+            salesChannel: { $first: '$Sales Channel' },
+            openPOs: {
+              $sum: {
+                $toDouble: {
+                  $ifNull: ['$Open POs', 0],
+                },
+              },
+            },
+            poReceivedUnits: {
+              $sum: {
+                $toDouble: {
+                  $ifNull: ['$PO_received_Units', 0],
+                },
+              },
+            },
+            currentOwner: {
+              $first: {
+                $ifNull: [
+                  '$Current Owner',
+                  {
+                    $ifNull: [
+                      '$Current Owner ',
+                      {
+                        $ifNull: ['$CurrentOwner', '$currentOwner'],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            asin: '$_id',
+            productName: 1,
+            salesChannel: 1,
+            openPOs: 1,
+            poReceivedUnits: 1,
+            currentOwner: 1,
+          },
+        },
+      ];
+      const rows = await Buybox.aggregate(pipeline);
+      return rows;
+    })();
+
+    const skuNoBuyboxDetailsPromise = (async () => {
+      // Distinct ASINs from buyboxes on latest date where Current Owner != Amazon.ae (and not blank).
+      const match = {
+        ...dateMatchQuery('Date', buyboxDateKeyEffective),
+        $expr: {
+          $and: [
+            {
+              $ne: [
+                {
+                  $toString: {
+                    $ifNull: [
+                      '$Current Owner',
+                      {
+                        $ifNull: [
+                          '$Current Owner ',
+                          {
+                            $ifNull: ['$CurrentOwner', '$currentOwner'],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+                'Amazon.ae',
+              ],
+            },
+            {
+              $ne: [
+                {
+                  $toString: {
+                    $ifNull: [
+                      '$Current Owner',
+                      {
+                        $ifNull: [
+                          '$Current Owner ',
+                          {
+                            $ifNull: ['$CurrentOwner', '$currentOwner'],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+                '',
+              ],
+            },
+          ],
+        },
+      };
+
+      const pipeline = [
+        { $match: match },
+        {
+          $group: {
+            _id: '$ASIN',
+            productName: { $first: '$Product Name' },
+            salesChannel: { $first: '$Sales Channel' },
+            openPOs: {
+              $sum: {
+                $toDouble: {
+                  $ifNull: ['$Open POs', 0],
+                },
+              },
+            },
+            poReceivedUnits: {
+              $sum: {
+                $toDouble: {
+                  $ifNull: ['$PO_received_Units', 0],
+                },
+              },
+            },
+            currentOwner: {
+              $first: {
+                $ifNull: [
+                  '$Current Owner',
+                  {
+                    $ifNull: [
+                      '$Current Owner ',
+                      {
+                        $ifNull: ['$CurrentOwner', '$currentOwner'],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            asin: '$_id',
+            productName: 1,
+            salesChannel: 1,
+            openPOs: 1,
+            poReceivedUnits: 1,
+            currentOwner: 1,
+          },
+        },
+      ];
+      const rows = await Buybox.aggregate(pipeline);
+      return rows;
+    })();
+
+    const [openPODetails, poReceivedDetails, skuNoBuyboxDetails] = await Promise.all([
+      openPODetailsPromise,
+      poReceivedDetailsPromise,
+      skuNoBuyboxDetailsPromise,
+    ]);
+
+    return res.json({
+      ...executiveSummary,
+      dataUpdated,
+      poSummary: {
+        openPOs: openPODetails.length,
+        poReceived: poReceivedDetails.length,
+        skuNoBuybox: skuNoBuyboxDetails.length,
+        openPODetails,
+        poReceivedDetails,
+        skuNoBuyboxDetails,
+      },
+    });
+  } catch (error) {
+    console.error('Error computing executive summary updated date:', error);
+    // Fallback to static executive summary without dynamic date.
+    return res.json(executiveSummary);
+  }
+});
 router.get('/revenue', async (req, res) => {
   try {
     const docs = await Revenue.find({}).lean();
@@ -186,9 +654,12 @@ router.get('/revenue', async (req, res) => {
       const organicRevenue = parseNum(doc.organic_sale);
       const organicUnits = Math.max(0, totalUnits - adUnits);
       const aov = totalUnits > 0 ? totalSales / totalUnits : 0;
-      const tacos = totalSales > 0 ? (parseNum(doc.ads_spend) / totalSales) * 100 : 0;
+      const adsSpend = parseNum(doc.ads_spend);
+      const tacos = totalSales > 0 ? (adsSpend / totalSales) * 100 : 0;
+      const snapshotDateKey = parseDateKey(doc.Date);
       const dateStr = doc.Date != null ? String(doc.Date) : '';
-      const reportMonth = dateStr ? dateStr.slice(0, 7) : '';
+      const reportMonth = snapshotDateKey ? snapshotDateKey.slice(0, 7) : '';
+      const reportDate = dateStr ? dateStr.slice(0, 10) : '';
 
       return {
         id: doc._id?.toString() || String(index + 1),
@@ -198,6 +669,8 @@ router.get('/revenue', async (req, res) => {
         packSize: doc['Pack Size'] != null ? String(doc['Pack Size']) : '',
         salesChannel: doc['Sales Channel'] ?? '',
         reportMonth,
+        snapshotDate: snapshotDateKey,
+        reportDate,
         overallUnit: totalUnits,
         overallRevenue: totalSales,
         adUnit: adUnits,
@@ -209,21 +682,51 @@ router.get('/revenue', async (req, res) => {
         promotionalUnit: 0,
         aov,
         tacos,
+        adSpend: adsSpend,
       };
     });
+
+    // Latest data date for Revenue – used by frontend to show
+    // "Data updated as of" based on the most recent document.
+    const latestRevenueDoc = docs.reduce((latest, cur) => {
+      const curDate = cur.Date ? new Date(cur.Date) : null;
+      if (!curDate || Number.isNaN(curDate.getTime())) return latest;
+      if (!latest) return cur;
+      const latestDate = latest.Date ? new Date(latest.Date) : null;
+      if (!latestDate || Number.isNaN(latestDate.getTime())) return cur;
+      return curDate > latestDate ? cur : latest;
+    }, null);
+    const updatedAt = latestRevenueDoc?.Date
+      ? new Date(latestRevenueDoc.Date).toISOString()
+      : new Date().toISOString();
 
     const dateFilterType = req.query.dateFilterType || '';
     const customRangeStart = req.query.customRangeStart || '';
     const customRangeEnd = req.query.customRangeEnd || '';
+    const includePeriods = String(req.query.includePeriods || '') === '1';
     let comparison = null;
+    let periodsOut = null;
+    let currentRowsOut = null;
+    let comparisonRowsOut = null;
+    let periodLabelsOut = null;
+    let periodTypeOut = null;
 
     if (dateFilterType) {
-      const periods = getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd);
+      const dayWeekPeriods = getPeriodDaysOrWeeks(dateFilterType);
+      const periods = dayWeekPeriods || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd);
       if (periods) {
+        periodsOut = { current: periods.current, comparison: periods.comparison };
+        periodLabelsOut = periods.labels || null;
+        periodTypeOut = periods.periodType || 'MONTH';
         const currentSet = new Set(periods.current);
         const comparisonSet = new Set(periods.comparison);
-        const currentRows = rows.filter((r) => r.reportMonth && currentSet.has(r.reportMonth));
-        const comparisonRows = rows.filter((r) => r.reportMonth && comparisonSet.has(r.reportMonth));
+        const keyField = dayWeekPeriods ? 'reportDate' : 'reportMonth';
+        const currentRows = rows.filter((r) => r[keyField] && currentSet.has(r[keyField]));
+        const comparisonRows = rows.filter((r) => r[keyField] && comparisonSet.has(r[keyField]));
+        if (includePeriods) {
+          currentRowsOut = currentRows;
+          comparisonRowsOut = comparisonRows;
+        }
         const curr = aggregateRevenueRows(currentRows);
         const prev = aggregateRevenueRows(comparisonRows);
 
@@ -253,6 +756,14 @@ router.get('/revenue', async (req, res) => {
       title: 'Revenue',
       rows,
       total: rows.length,
+      updatedAt,
+      ...(includePeriods && periodsOut && currentRowsOut && comparisonRowsOut && {
+        periods: periodsOut,
+        periodType: periodTypeOut,
+        periodLabels: periodLabelsOut,
+        currentRows: currentRowsOut,
+        comparisonRows: comparisonRowsOut,
+      }),
       ...(comparison && { comparison }),
     });
   } catch (error) {
@@ -750,6 +1261,7 @@ router.get('/marketing', async (req, res) => {
         adSpend: { pctChange: fmt(pctChange(totalCost, prevTotalCost)) },
         adRevenuePerUnit: { pctChange: fmt(pctChange(adRevenuePerUnit, prevAdRevenuePerUnit)) },
         overallRevenuePerUnit: { pctChange: fmt(pctChange(overallRevenuePerUnit, prevOverallRevenuePerUnit)) },
+        overallRevenue: { pctChange: fmt(pctChange(totalSales, prevTotalSales)) },
         acos: { pctChange: fmt(pctChange(acos, prevAcos)) },
       };
     }
@@ -850,6 +1362,19 @@ router.get('/inventory', async (req, res) => {
       };
     });
 
+    // Latest data date for Inventory – for "Data updated as of".
+    const latestInventoryDoc = docs.reduce((latest, cur) => {
+      const curDate = cur.Date ? new Date(cur.Date) : null;
+      if (!curDate || Number.isNaN(curDate.getTime())) return latest;
+      if (!latest) return cur;
+      const latestDate = latest.Date ? new Date(latest.Date) : null;
+      if (!latestDate || Number.isNaN(latestDate.getTime())) return cur;
+      return curDate > latestDate ? cur : latest;
+    }, null);
+    const updatedAt = latestInventoryDoc?.Date
+      ? new Date(latestInventoryDoc.Date).toISOString()
+      : new Date().toISOString();
+
     const dateFilterType = req.query.dateFilterType || '';
     const customRangeStart = req.query.customRangeStart || '';
     const customRangeEnd = req.query.customRangeEnd || '';
@@ -874,12 +1399,41 @@ router.get('/inventory', async (req, res) => {
           instockRate: { pctChange: fmt(pctChange(curr.instockRate, prev.instockRate)) },
         };
       }
+    } else if (customRangeStart) {
+      // Day-level comparison: selected day vs previous day.
+      const selectedKey = parseDateKey(customRangeStart);
+      if (selectedKey) {
+        const selectedDate = new Date(selectedKey);
+        if (!Number.isNaN(selectedDate.getTime())) {
+          const prevDate = new Date(selectedDate);
+          prevDate.setDate(prevDate.getDate() - 1);
+          const prevKey = parseDateKey(prevDate);
+
+          const normalizeDocDate = (value) => parseDateKey(value);
+
+          const currentRows = rows.filter((r) => normalizeDocDate(r.oosDate) === selectedKey);
+          const comparisonRows = rows.filter((r) => normalizeDocDate(r.oosDate) === prevKey);
+
+          const curr = aggregateInventoryRows(currentRows);
+          const prev = aggregateInventoryRows(comparisonRows);
+
+          const fmt = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 10) / 10);
+
+          comparison = {
+            available: { pctChange: fmt(pctChange(curr.totalAvailable, prev.totalAvailable)) },
+            last30Sales: { pctChange: fmt(pctChange(curr.last30Sales, prev.last30Sales)) },
+            dos: { pctChange: fmt(pctChange(curr.avgDos, prev.avgDos)) },
+            instockRate: { pctChange: fmt(pctChange(curr.instockRate, prev.instockRate)) },
+          };
+        }
+      }
     }
 
     res.json({
       title: 'Inventory',
       rows,
       total: rows.length,
+      updatedAt,
       ...(comparison && { comparison }),
     });
   } catch (error) {
@@ -899,24 +1453,31 @@ router.get('/buybox', async (req, res) => {
       const availableInventory = parseNum(doc['Available Inventory']);
       const dos = parseNum(doc.DOS);
       const openPos = parseNum(doc['Open POs']);
-      const dateStr = doc.Date != null ? String(doc.Date) : '';
-      const reportMonth = dateStr ? dateStr.slice(0, 7) : '';
-
-      const buyboxOwner = doc.BuyBox || '';
+      const reportDate = parseDateKey(doc.Date);
+      const reportMonth = reportDate ? reportDate.slice(0, 7) : '';
+      const buyboxOwner =
+        doc['Current Owner'] ?? doc['Current Owner '] ?? doc.CurrentOwner ?? doc.currentOwner ?? doc.BuyBox ?? '';
       const hasBuybox =
         typeof buyboxOwner === 'string'
           ? buyboxOwner.trim().toLowerCase() !== 'no' && buyboxOwner.trim() !== ''
           : Boolean(buyboxOwner);
 
       return {
+        // identifiers
+        _id: doc._id?.toString() || String(index + 1),
         id: doc._id?.toString() || String(index + 1),
+        // core product fields
         asin: doc.ASIN ?? '',
         productName: doc['Product Name'] ?? '',
         productCategory: doc['Product Category'] ?? doc['Product Sub Category'] ?? '',
         brand: doc.Brand ?? '',
+        productSubCategory: doc['Product Sub Category'] ?? '',
         packSize: doc['Pack Size'] != null ? String(doc['Pack Size']) : '',
         salesChannel: doc['Sales Channel'] ?? '',
+        packType: doc['Pack Type'] ?? '',
         reportMonth,
+        reportDate,
+        // inventory & sales metrics
         availableInventory,
         last30DaysSales: totalSales,
         dos,
@@ -935,13 +1496,129 @@ router.get('/buybox', async (req, res) => {
         inStockFlag: doc.in_stock_flag,
         cumulativeInstockDays: parseNum(doc.cumulative_instock_days),
         dayOfMonth: parseNum(doc.day_of_month),
+        minAvailableQty: parseNum(doc.min_available_qty),
+        maxAvailableQty: parseNum(doc.max_available_qty),
         hasBuybox,
         currentBuyboxOwner: buyboxOwner,
         currentBuyboxPrice: doc.Price ?? null,
         currentVcPrice: doc['VC Ideal Price'] ?? null,
         currentScPrice: doc['SC Ideal Price'] ?? null,
+        // direct mirrors of raw buybox sheet columns for UI table
+        Brand: doc.Brand ?? '',
+        'Product Sub Category': doc['Product Sub Category'] ?? '',
+        'Vendor Confirmation %': doc['Vendor Confirmation %'] ?? '',
+        PO_received_amount: doc.PO_received_amount ?? doc.PO_received_amt ?? '',
+        PO_received_Units: doc.PO_received_Units ?? '',
+        'Open POs': doc['Open POs'] ?? '',
+        Receive_Fill_Rate: doc.Receive_Fill_Rate ?? '',
+        'Overall Vendor Lead Time (days)': doc['Overall Vendor Lead Time (days)'] ?? '',
+        'Aged 90+ Days Sellable Inventory': doc['Aged 90+ Days Sellable Inventory'] ?? '',
+        'Aged 90+ Days Sellable Units': doc['Aged 90+ Days Sellable Units'] ?? '',
+        'Sellable Inventory Amount': doc['Sellable Inventory Amount'] ?? '',
+        'Available Inventory': doc['Available Inventory'] ?? '',
+        'Unsellable On Hand Inventory Amount': doc['Unsellable On Hand Inventory Amount'] ?? '',
+        'Unsellable On Hand Units': doc['Unsellable On Hand Units'] ?? '',
+        Date: doc.Date ?? '',
+        'Sales Channel': doc['Sales Channel'] ?? '',
+        in_stock_flag: doc.in_stock_flag ?? '',
+        cumulative_instock_days: doc.cumulative_instock_days ?? '',
+        day_of_month: doc.day_of_month ?? '',
+        'Instock Rate': doc['Instock Rate'] ?? '',
+        'OOS Date': doc['OOS Date'] ?? doc.OOS_Date ?? '',
+        total_sales: doc.total_sales ?? '',
+        total_units: doc.total_units ?? '',
+        sell_through: doc.sell_through ?? '',
+        DOS: doc.DOS ?? '',
+        min_available_qty: doc.min_available_qty ?? '',
+        max_available_qty: doc.max_available_qty ?? '',
+        Stock_Status: doc.Stock_Status ?? '',
+        'No/Low Stock wt Open POs': doc['No/Low Stock wt Open POs'] ?? '',
+        'No/Low Stock wt no Open POs': doc['No/Low Stock wt no Open POs'] ?? '',
+        'Product Name': doc['Product Name'] ?? '',
+        'Pack Type': doc['Pack Type'] ?? '',
+        'SC Ideal Price': doc['SC Ideal Price'] ?? '',
+        'VC Ideal Price': doc['VC Ideal Price'] ?? '',
+        'Product Category': doc['Product Category'] ?? '',
+        'Current Owner': buyboxOwner,
+        'Current Owner Price': doc['Current Owner Price'] ?? '',
+        'Current Owner MOQ': doc['Current Owner MOQ'] ?? '',
+        // hijackers 1–10 (name, price, MOQ)
+        'Hijacker 1': doc['Hijacker 1'] ?? '',
+        'Hijacker 1 Price': doc['Hijacker 1 Price'] ?? '',
+        'Hijacker 1 MOQ': doc['Hijacker 1 MOQ'] ?? '',
+        'Hijacker 2': doc['Hijacker 2'] ?? '',
+        'Hijacker 2 Price': doc['Hijacker 2 Price'] ?? '',
+        'Hijacker 2 MOQ': doc['Hijacker 2 MOQ'] ?? '',
+        'Hijacker 3': doc['Hijacker 3'] ?? '',
+        'Hijacker 3 Price': doc['Hijacker 3 Price'] ?? '',
+        'Hijacker 3 MOQ': doc['Hijacker 3 MOQ'] ?? '',
+        'Hijacker 4': doc['Hijacker 4'] ?? '',
+        'Hijacker 4 Price': doc['Hijacker 4 Price'] ?? '',
+        'Hijacker 4 MOQ': doc['Hijacker 4 MOQ'] ?? '',
+        'Hijacker 5': doc['Hijacker 5'] ?? '',
+        'Hijacker 5 Price': doc['Hijacker 5 Price'] ?? '',
+        'Hijacker 5 MOQ': doc['Hijacker 5 MOQ'] ?? '',
+        'Hijacker 6': doc['Hijacker 6'] ?? '',
+        'Hijacker 6 Price': doc['Hijacker 6 Price'] ?? '',
+        'Hijacker 6 MOQ': doc['Hijacker 6 MOQ'] ?? '',
+        'Hijacker 7': doc['Hijacker 7'] ?? '',
+        'Hijacker 7 Price': doc['Hijacker 7 Price'] ?? '',
+        'Hijacker 7 MOQ': doc['Hijacker 7 MOQ'] ?? '',
+        'Hijacker 8': doc['Hijacker 8'] ?? '',
+        'Hijacker 8 Price': doc['Hijacker 8 Price'] ?? '',
+        'Hijacker 8 MOQ': doc['Hijacker 8 MOQ'] ?? '',
+        'Hijacker 9': doc['Hijacker 9'] ?? '',
+        'Hijacker 9 Price': doc['Hijacker 9 Price'] ?? '',
+        'Hijacker 9 MOQ': doc['Hijacker 9 MOQ'] ?? '',
+        'Hijacker 10': doc['Hijacker 10'] ?? '',
+        'Hijacker 10 Price': doc['Hijacker 10 Price'] ?? '',
+        'Hijacker 10 MOQ': doc['Hijacker 10 MOQ'] ?? '',
+        // camelCase aliases for frontend convenience
+        hijacker1: doc['Hijacker 1'] ?? '',
+        hijacker1Price: doc['Hijacker 1 Price'] ?? '',
+        hijacker1MOQ: doc['Hijacker 1 MOQ'] ?? '',
+        hijacker2: doc['Hijacker 2'] ?? '',
+        hijacker2Price: doc['Hijacker 2 Price'] ?? '',
+        hijacker2MOQ: doc['Hijacker 2 MOQ'] ?? '',
+        hijacker3: doc['Hijacker 3'] ?? '',
+        hijacker3Price: doc['Hijacker 3 Price'] ?? '',
+        hijacker3MOQ: doc['Hijacker 3 MOQ'] ?? '',
+        hijacker4: doc['Hijacker 4'] ?? '',
+        hijacker4Price: doc['Hijacker 4 Price'] ?? '',
+        hijacker4MOQ: doc['Hijacker 4 MOQ'] ?? '',
+        hijacker5: doc['Hijacker 5'] ?? '',
+        hijacker5Price: doc['Hijacker 5 Price'] ?? '',
+        hijacker5MOQ: doc['Hijacker 5 MOQ'] ?? '',
+        hijacker6: doc['Hijacker 6'] ?? '',
+        hijacker6Price: doc['Hijacker 6 Price'] ?? '',
+        hijacker6MOQ: doc['Hijacker 6 MOQ'] ?? '',
+        hijacker7: doc['Hijacker 7'] ?? '',
+        hijacker7Price: doc['Hijacker 7 Price'] ?? '',
+        hijacker7MOQ: doc['Hijacker 7 MOQ'] ?? '',
+        hijacker8: doc['Hijacker 8'] ?? '',
+        hijacker8Price: doc['Hijacker 8 Price'] ?? '',
+        hijacker8MOQ: doc['Hijacker 8 MOQ'] ?? '',
+        hijacker9: doc['Hijacker 9'] ?? '',
+        hijacker9Price: doc['Hijacker 9 Price'] ?? '',
+        hijacker9MOQ: doc['Hijacker 9 MOQ'] ?? '',
+        hijacker10: doc['Hijacker 10'] ?? '',
+        hijacker10Price: doc['Hijacker 10 Price'] ?? '',
+        hijacker10MOQ: doc['Hijacker 10 MOQ'] ?? '',
       };
     });
+
+    // Latest data date for Buybox – for "Data updated as of".
+    const latestBuyboxDoc = docs.reduce((latest, cur) => {
+      const curDate = cur.Date ? new Date(cur.Date) : null;
+      if (!curDate || Number.isNaN(curDate.getTime())) return latest;
+      if (!latest) return cur;
+      const latestDate = latest.Date ? new Date(latest.Date) : null;
+      if (!latestDate || Number.isNaN(latestDate.getTime())) return cur;
+      return curDate > latestDate ? cur : latest;
+    }, null);
+    const updatedAt = latestBuyboxDoc?.Date
+      ? new Date(latestBuyboxDoc.Date).toISOString()
+      : new Date().toISOString();
 
     const dateFilterType = req.query.dateFilterType || '';
     const customRangeStart = req.query.customRangeStart || '';
@@ -963,14 +1640,52 @@ router.get('/buybox', async (req, res) => {
         comparison = {
           overallBuyboxPct: { pctChange: fmt(pctChange(curr.overallBuyboxPct, prev.overallBuyboxPct)) },
           noBuyboxSkus: { pctChange: fmt(pctChange(curr.noBuyboxSkus, prev.noBuyboxSkus)) },
+          amazonAeCount: { pctChange: fmt(pctChange(curr.amazonAeCount, prev.amazonAeCount)) },
         };
+      }
+    }
+
+    const normalizeRowDate = (r) => (r.reportDate && r.reportDate.length >= 10 ? r.reportDate.slice(0, 10) : parseDateKey(r.reportDate));
+
+    let rowsToReturn = rows;
+    let summaryFromApi = null;
+    let updatedAtForResponse = updatedAt;
+
+    if (customRangeStart) {
+      const selectedKey = parseDateKey(customRangeStart);
+      const endKey = parseDateKey(customRangeEnd) || selectedKey;
+      if (selectedKey) {
+        rowsToReturn = rows.filter((r) => {
+          const rd = normalizeRowDate(r);
+          return rd >= selectedKey && rd <= endKey;
+        });
+        summaryFromApi = aggregateBuyboxRows(rowsToReturn);
+        updatedAtForResponse = selectedKey ? `${selectedKey}T12:00:00.000Z` : updatedAt;
+        const selectedDate = new Date(selectedKey);
+        if (!Number.isNaN(selectedDate.getTime())) {
+          const prevDate = new Date(selectedDate);
+          prevDate.setDate(prevDate.getDate() - 1);
+          const prevKey = parseDateKey(prevDate);
+          const currentRows = rows.filter((r) => normalizeRowDate(r) === selectedKey);
+          const comparisonRows = rows.filter((r) => normalizeRowDate(r) === prevKey);
+          const curr = aggregateBuyboxRows(currentRows);
+          const prev = aggregateBuyboxRows(comparisonRows);
+          const fmt = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 10) / 10);
+          comparison = {
+            overallBuyboxPct: { pctChange: fmt(pctChange(curr.overallBuyboxPct, prev.overallBuyboxPct)) },
+            noBuyboxSkus: { pctChange: fmt(pctChange(curr.noBuyboxSkus, prev.noBuyboxSkus)) },
+            amazonAeCount: { pctChange: fmt(pctChange(curr.amazonAeCount, prev.amazonAeCount)) },
+          };
+        }
       }
     }
 
     res.json({
       title: 'Buybox',
-      rows,
-      total: rows.length,
+      rows: rowsToReturn,
+      total: rowsToReturn.length,
+      updatedAt: updatedAtForResponse,
+      ...(summaryFromApi && { summary: summaryFromApi }),
       ...(comparison && { comparison }),
     });
   } catch (error) {

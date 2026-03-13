@@ -13,6 +13,7 @@ const navItems = [
 ];
 
 export default function Dashboard() {
+  
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
