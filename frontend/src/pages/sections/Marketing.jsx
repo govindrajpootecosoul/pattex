@@ -253,6 +253,7 @@ export default function Marketing() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [funnelTotals, setFunnelTotals] = useState(null);
   const [filters, setFilters] = useState({
     asin: '',
     productName: '',
@@ -303,20 +304,49 @@ export default function Marketing() {
     if (campaignFilters.salesChannel) {
       params.campaignSalesChannel = campaignFilters.salesChannel;
     }
-    dashboardApi
-      .getMarketing(params)
-      .then((resp) => {
+
+    const normalizeMarketingTotals = (resp) => {
+      const metrics = resp?.metrics || {};
+      const impressions = Number(metrics.impressions);
+      const clicks = Number(metrics.clicks);
+      const sales = Number(metrics.overallRevenue ?? metrics.total_sales);
+      return {
+        impressions: Number.isFinite(impressions) ? impressions : 0,
+        clicks: Number.isFinite(clicks) ? clicks : 0,
+        sales: Number.isFinite(sales) ? sales : 0,
+      };
+    };
+
+    const baseFilterParams = {
+      ...(filters.asin && { asin: filters.asin }),
+      ...(filters.productName && { productName: filters.productName }),
+      ...(filters.productCategory && { productCategory: filters.productCategory }),
+      ...(filters.packSize && { packSize: filters.packSize }),
+      ...(filters.salesChannel && { salesChannel: filters.salesChannel }),
+    };
+
+    Promise.all([
+      dashboardApi.getMarketing(params),
+      dashboardApi.getMarketing({ ...baseFilterParams, dateFilterType: 'CURRENT_MONTH' }),
+      dashboardApi.getMarketing({ ...baseFilterParams, dateFilterType: 'PREVIOUS_MONTH' }),
+    ])
+      .then(([resp, currentMonthResp, previousMonthResp]) => {
         setData(resp);
         setComparison(resp?.comparison ?? null);
         setHasLoadedOnce(true);
+
+        const current = normalizeMarketingTotals(currentMonthResp);
+        const previous = normalizeMarketingTotals(previousMonthResp);
+        setFunnelTotals({ current, previous });
       })
-      .catch(() =>
+      .catch(() => {
         setData({
           title: 'Marketing',
           comingSoon: true,
           message: 'Marketing section – coming soon.',
-        }),
-      )
+        });
+        setFunnelTotals(null);
+      })
       .finally(() => setLoading(false));
   }, [
     dateFilterType,
@@ -461,9 +491,61 @@ export default function Marketing() {
     setCampaignDetailOtherColumns((prev) => ({ ...prev, [col]: !prev[col] }));
   };
 
-  const funnelMetricsData = data && !data.comingSoon && data.funnelMetrics
-    ? data.funnelMetrics
-    : FUNNEL_METRICS.map((m) => ({ metric: m, currentMonth: '', lastMonth: '', growth: '' }));
+  const funnelMetricsData = useMemo(() => {
+    const fmtInt = (n) => (n == null || !Number.isFinite(n) ? '—' : Math.round(n).toLocaleString());
+    const fmtAed = (n) =>
+      n == null || !Number.isFinite(n)
+        ? '—'
+        : `AED ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const growthPct = (cur, prev) => {
+      if (!Number.isFinite(cur) || !Number.isFinite(prev) || prev === 0) return null;
+      return ((cur - prev) / prev) * 100;
+    };
+
+    const current = funnelTotals?.current;
+    const previous = funnelTotals?.previous;
+
+    const safe = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+    const curImpressions = safe(current?.impressions);
+    const prevImpressions = safe(previous?.impressions);
+    const curClicks = safe(current?.clicks);
+    const prevClicks = safe(previous?.clicks);
+    const curSales = safe(current?.sales);
+    const prevSales = safe(previous?.sales);
+
+    const rows = [
+      {
+        metric: 'Impressions',
+        currentMonth: fmtInt(curImpressions),
+        lastMonth: fmtInt(prevImpressions),
+        growthValue: growthPct(curImpressions, prevImpressions),
+      },
+      {
+        metric: 'Clicks',
+        currentMonth: fmtInt(curClicks),
+        lastMonth: fmtInt(prevClicks),
+        growthValue: growthPct(curClicks, prevClicks),
+      },
+      {
+        metric: 'Sales',
+        currentMonth: fmtAed(curSales),
+        lastMonth: fmtAed(prevSales),
+        growthValue: growthPct(curSales, prevSales),
+      },
+    ];
+
+    return rows.map((r) => ({
+      metric: r.metric,
+      currentMonth: r.currentMonth,
+      lastMonth: r.lastMonth,
+      growth:
+        r.growthValue == null || Number.isNaN(r.growthValue)
+          ? '—'
+          : `${r.growthValue > 0 ? '↑' : r.growthValue < 0 ? '↓' : ''}${Math.abs(r.growthValue).toFixed(2)}%`,
+      growthValue: r.growthValue,
+    }));
+  }, [funnelTotals]);
   const skuRows = (data && !data.comingSoon && Array.isArray(data.skuRows) ? data.skuRows : []);
 
   // Options for top Marketing filters, fetched from Marketing data (skuRows)
@@ -1177,22 +1259,64 @@ export default function Marketing() {
             <div className="funnel-stage funnel-stage-3"><span>CVR</span></div>
           </div>
           <div className="sales-funnel-metrics-wrap">
-            <table className="data-table funnel-metrics-table">
+            <table
+              className="data-table funnel-metrics-table"
+              style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                border: '1px solid #0f172a',
+                background: '#ffffff',
+              }}
+            >
               <thead>
                 <tr>
-                  <th>Metrics</th>
-                  <th className="col-num">Current Month</th>
-                  <th className="col-num">Last Month</th>
-                  <th className="col-num">Growth</th>
+                  <th style={{ border: '1px solid #0f172a', padding: '10px 12px', textAlign: 'left' }}>Metrics</th>
+                  <th
+                    className="col-num"
+                    style={{ border: '1px solid #0f172a', padding: '10px 12px', textAlign: 'right' }}
+                  >
+                    Current Month
+                  </th>
+                  <th
+                    className="col-num"
+                    style={{ border: '1px solid #0f172a', padding: '10px 12px', textAlign: 'right' }}
+                  >
+                    Last Month
+                  </th>
+                  <th
+                    className="col-num"
+                    style={{ border: '1px solid #0f172a', padding: '10px 12px', textAlign: 'right' }}
+                  >
+                    Growth
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {(Array.isArray(funnelMetricsData) ? funnelMetricsData : FUNNEL_METRICS.map((m) => ({ metric: m, currentMonth: '', lastMonth: '', growth: '' }))).map((row, i) => (
                   <tr key={row.metric || i}>
-                    <td>{row.metric}</td>
-                    <td className="col-num">{row.currentMonth ?? '—'}</td>
-                    <td className="col-num">{row.lastMonth ?? '—'}</td>
-                    <td className="col-num">{row.growth ?? '—'}</td>
+                    <td style={{ border: '1px solid #0f172a', padding: '10px 12px' }}>{row.metric}</td>
+                    <td className="col-num" style={{ border: '1px solid #0f172a', padding: '10px 12px' }}>
+                      {row.currentMonth ?? '—'}
+                    </td>
+                    <td className="col-num" style={{ border: '1px solid #0f172a', padding: '10px 12px' }}>
+                      {row.lastMonth ?? '—'}
+                    </td>
+                    <td
+                      className="col-num"
+                      style={{
+                        border: '1px solid #0f172a',
+                        padding: '10px 12px',
+                        color:
+                          row?.growthValue == null || Number.isNaN(row?.growthValue)
+                            ? '#64748b'
+                            : row.growthValue < 0
+                            ? '#dc2626'
+                            : '#16a34a',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {row.growth ?? '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>

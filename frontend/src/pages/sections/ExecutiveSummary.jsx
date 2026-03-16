@@ -10,7 +10,7 @@ export default function ExecutiveSummary() {
   const [prevRevenueRows, setPrevRevenueRows] = useState([]);
   const [revenueLoading, setRevenueLoading] = useState(true);
   const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('declining');
-  const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
+  const [dateFilterType, setDateFilterType] = useState('CURRENT_DAY'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
   const [periodLabels, setPeriodLabels] = useState({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -222,10 +222,20 @@ export default function ExecutiveSummary() {
   }
 
   const poSummary = data.poSummary || {};
+  const formatAedRounded = (value) => {
+    const n = Number(value) || 0;
+    return `AED ${Math.round(n).toLocaleString()}`;
+  };
+
+  // Force KPI table to show zeros for now (no API values).
+  const kpiRows = [
+    { metric: 'Overall Revenue', target: 0, actualMTD: 0, actualExpected: null, variation: null },
+    { metric: 'Overall Spend', target: 0, actualMTD: 0, actualExpected: null, variation: null },
+  ];
 
   return (
-    <div className="exec-summary">
-      <header className="exec-header-row fade-in-up">
+    <div className="exec-summary" style={{ paddingTop: '16px', paddingBottom: 0 }}>
+      <header className="exec-header-row fade-in-up" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <div className="exec-header-right">
           <select
             className="deep-dive-period-select"
@@ -273,7 +283,7 @@ export default function ExecutiveSummary() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.kpis?.map((row, i) => {
+                    {kpiRows.map((row, i) => {
                       const variationNumber =
                         typeof row.variation === 'number'
                           ? row.variation
@@ -412,10 +422,8 @@ export default function ExecutiveSummary() {
                             <div>{row.productName ?? '—'}</div>
                           </div>
                         </td>
-                        <td className="col-num">
-                          {(Number(row.previousRevenue) || 0).toLocaleString()}
-                        </td>
-                        <td className="col-num">{(Number(row.currentRevenue) || 0).toLocaleString()}</td>
+                        <td className="col-num">{formatAedRounded(row.previousRevenue)}</td>
+                        <td className="col-num">{formatAedRounded(row.currentRevenue)}</td>
                         <td className="col-num">
                           {(() => {
                             const v = Number(row.absDiffRevenue) || 0;

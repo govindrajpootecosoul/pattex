@@ -740,7 +740,7 @@ export default function Revenue() {
               value={filters.asin}
               onChange={handleAsinChange}
             >
-              <option value="">ASIN</option>
+              <option value="">{filters.asin ? 'Select All' : 'ASIN'}</option>
               {asinOptions.map((asin) => (
                 <option key={asin} value={asin}>
                   {asin}
@@ -753,7 +753,7 @@ export default function Revenue() {
               value={filters.productName}
               onChange={handleProductNameChange}
             >
-              <option value="">Product Name</option>
+              <option value="">{filters.productName ? 'Select All' : 'Product Name'}</option>
               {productNameOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -766,7 +766,7 @@ export default function Revenue() {
               value={filters.category}
               onChange={handleCategoryChange}
             >
-              <option value="">Product Category</option>
+              <option value="">{filters.category ? 'Select All' : 'Product Category'}</option>
               {categoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
@@ -779,7 +779,7 @@ export default function Revenue() {
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">Sales Channel</option>
+              <option value="">{filters.channel ? 'Select All' : 'Sales Channel'}</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -840,7 +840,10 @@ export default function Revenue() {
             </span>
           )}
         </div>
-        <div className="kpi-grid revenue-kpi-grid">
+        <div
+          className="kpi-grid revenue-kpi-grid"
+          style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}
+        >
           <button
             type="button"
             className="kpi-item kpi-clickable kpi-blue"
@@ -849,7 +852,10 @@ export default function Revenue() {
             <div className="label">Overall Unit / Revenue</div>
             <div className="value value-primary">
               AED {Math.round(summary.overallRevenue).toLocaleString()}
-              <span className={`kpi-trend-inline ${kpiTrends.overall.type === 'negative' ? 'negative' : kpiTrends.overall.type === 'neutral' ? 'neutral' : ''}`}>
+              <span
+                className={`kpi-trend-inline ${kpiTrends.overall.type === 'negative' ? 'negative' : kpiTrends.overall.type === 'neutral' ? 'neutral' : ''}`}
+                style={{ fontSize: '0.75rem' }}
+              >
                 ({kpiTrends.overall.value})
               </span>
             </div>
@@ -863,7 +869,10 @@ export default function Revenue() {
             <div className="label">Ad Unit / Revenue</div>
             <div className="value value-primary">
               AED {Math.round(summary.adRevenue).toLocaleString()}
-              <span className={`kpi-trend-inline ${kpiTrends.ad.type === 'negative' ? 'negative' : kpiTrends.ad.type === 'neutral' ? 'neutral' : ''}`}>
+              <span
+                className={`kpi-trend-inline ${kpiTrends.ad.type === 'negative' ? 'negative' : kpiTrends.ad.type === 'neutral' ? 'neutral' : ''}`}
+                style={{ fontSize: '0.75rem' }}
+              >
                 ({kpiTrends.ad.value})
               </span>
             </div>
@@ -877,7 +886,10 @@ export default function Revenue() {
             <div className="label">Organic Unit / Revenue</div>
             <div className="value value-primary">
               AED {Math.round(summary.organicRevenue).toLocaleString()}
-              <span className={`kpi-trend-inline ${kpiTrends.organic.type === 'negative' ? 'negative' : kpiTrends.organic.type === 'neutral' ? 'neutral' : ''}`}>
+              <span
+                className={`kpi-trend-inline ${kpiTrends.organic.type === 'negative' ? 'negative' : kpiTrends.organic.type === 'neutral' ? 'neutral' : ''}`}
+                style={{ fontSize: '0.75rem' }}
+              >
                 ({kpiTrends.organic.value})
               </span>
             </div>
@@ -891,7 +903,10 @@ export default function Revenue() {
             <div className="label">TACOS</div>
             <div className="value value-primary">
               {summary.tacos.toFixed(1)}%
-              <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'positive' ? 'negative' : kpiTrends.tacos.type === 'negative' ? '' : 'neutral'}`}>
+              <span
+                className={`kpi-trend-inline ${kpiTrends.tacos.type === 'positive' ? 'negative' : kpiTrends.tacos.type === 'negative' ? '' : 'neutral'}`}
+                style={{ fontSize: '0.75rem' }}
+              >
                 ({kpiTrends.tacos.value})
               </span>
             </div>
@@ -901,7 +916,10 @@ export default function Revenue() {
             <div className="label">Ads Spend</div>
             <div className="value value-primary">
               AED {summary.adsSpend.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-              <span className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}>
+              <span
+                className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}
+                style={{ fontSize: '0.75rem' }}
+              >
                 ({kpiTrends.adSpend.value})
               </span>
             </div>
