@@ -66,9 +66,36 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   border-bottom: 1px solid var(--border);
   min-height: 56px;
   flex-shrink: 0;
+}
+
+.company-db-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius);
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  text-transform: lowercase;
+  flex-shrink: 0;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar.closed .company-db-badge {
+  max-width: 28px;
+  min-width: 28px;
+  padding: 0.2rem;
+  font-size: 0.65rem;
+  text-align: center;
 }
 
 .sidebar.closed .sidebar-header {

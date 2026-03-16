@@ -11,21 +11,22 @@ const generateToken = (id) => {
 // POST /api/auth/signup
 router.post('/signup', async (req, res) => {
   try {
-    const { name, email, phone, password } = req.body;
-    if (!name || !email || !phone || !password) {
-      return res.status(400).json({ message: 'Please provide name, email, phone and password' });
+    const { name, email, phone, password, databaseName } = req.body;
+    if (!name || !email || !phone || !password || !databaseName) {
+      return res.status(400).json({ message: 'Please provide name, email, phone, password and database name (company)' });
     }
     const exists = await User.findOne({ email });
     if (exists) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
-    const user = await User.create({ name, email, phone, password });
+    const user = await User.create({ name, email, phone, password, databaseName: String(databaseName).trim() });
     const token = generateToken(user._id);
     res.status(201).json({
       _id: user._id,
       name: user.name,
       email: user.email,
       phone: user.phone,
+      databaseName: user.databaseName,
       token,
     });
   } catch (error) {
@@ -50,6 +51,7 @@ router.post('/login', async (req, res) => {
       name: user.name,
       email: user.email,
       phone: user.phone,
+      databaseName: user.databaseName,
       token,
     });
   } catch (error) {

@@ -9,6 +9,7 @@ export default function Signup() {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [databaseName, setDatabaseName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { signup } = useAuth();
@@ -19,8 +20,8 @@ export default function Signup() {
     setError('');
     setLoading(true);
     try {
-      const data = await authApi.signup({ name, email, phone, password });
-      signup({ _id: data._id, name: data.name, email: data.email, phone: data.phone }, data.token);
+      const data = await authApi.signup({ name, email, phone, password, databaseName });
+      signup({ _id: data._id, name: data.name, email: data.email, phone: data.phone, databaseName: data.databaseName }, data.token);
       navigate('/dashboard');
     } catch (err) {
       setError(err.message || 'Signup failed');
@@ -42,6 +43,8 @@ export default function Signup() {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="you@example.com" />
           <label>Phone</label>
           <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} required placeholder="+1234567890" />
+          <label>Database name (company)</label>
+          <input type="text" value={databaseName} onChange={(e) => setDatabaseName(e.target.value)} required placeholder="e.g. pattex, emami" title="Company database name on the cluster" />
           <label>Password</label>
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} placeholder="Min 6 characters" />
           <button type="submit" disabled={loading}>{loading ? 'Creating account...' : 'Sign up'}</button>

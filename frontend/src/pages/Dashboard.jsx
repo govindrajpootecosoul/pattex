@@ -28,6 +28,9 @@ export default function Dashboard() {
       <aside className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-header">
           <span className="logo">Pattex</span>
+          {user?.databaseName && (
+            <span className="company-db-badge" title="Company database">{user.databaseName}</span>
+          )}
           <button
             type="button"
             className="sidebar-toggle"

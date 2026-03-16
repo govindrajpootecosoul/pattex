@@ -1,11 +1,21 @@
 import express from 'express';
 import mongoose from 'mongoose';
-import Inventory from '../models/Inventory.js';
-import Revenue from '../models/Revenue.js';
-import Marketing from '../models/Marketing.js';
-import Buybox from '../models/Buybox.js';
+import { getCompanyModels } from '../models/companyDb.js';
 
 const router = express.Router();
+
+// Attach company DB models from logged-in user's databaseName (e.g. pattex, emami)
+router.use((req, res, next) => {
+  try {
+    if (!req.user?.databaseName) {
+      return res.status(400).json({ message: 'User company database not set' });
+    }
+    req.companyModels = getCompanyModels(req.user.databaseName);
+    next();
+  } catch (err) {
+    return res.status(400).json({ message: err.message || 'Invalid company database' });
+  }
+});
 
 function parseNum(val) {
   if (val == null || val === '') return 0;
@@ -359,11 +369,11 @@ router.get('/executive-summary', async (req, res) => {
     // Use the latest snapshot date across revenue + buybox datasets.
     const [revenueDateKey, buyboxDateKey] = await Promise.all([
       (async () => {
-        const latestRevenueDoc = await Revenue.findOne({}).sort({ Date: -1 }).lean();
+        const latestRevenueDoc = await req.companyModels.Revenue.findOne({}).sort({ Date: -1 }).lean();
         return parseDateKey(latestRevenueDoc?.Date);
       })(),
       (async () => {
-        const latestBuyboxDoc = await Buybox.findOne({}).sort({ Date: -1 }).lean();
+        const latestBuyboxDoc = await req.companyModels.Buybox.findOne({}).sort({ Date: -1 }).lean();
         return parseDateKey(latestBuyboxDoc?.Date);
       })(),
     ]);
@@ -442,7 +452,7 @@ router.get('/executive-summary', async (req, res) => {
           },
         },
       ];
-      const rows = await Buybox.aggregate(pipeline);
+      const rows = await req.companyModels.Buybox.aggregate(pipeline);
       return rows;
     })();
 
@@ -511,7 +521,7 @@ router.get('/executive-summary', async (req, res) => {
           },
         },
       ];
-      const rows = await Buybox.aggregate(pipeline);
+      const rows = await req.companyModels.Buybox.aggregate(pipeline);
       return rows;
     })();
 
@@ -615,7 +625,7 @@ router.get('/executive-summary', async (req, res) => {
           },
         },
       ];
-      const rows = await Buybox.aggregate(pipeline);
+      const rows = await req.companyModels.Buybox.aggregate(pipeline);
       return rows;
     })();
 
@@ -645,7 +655,7 @@ router.get('/executive-summary', async (req, res) => {
 });
 router.get('/revenue', async (req, res) => {
   try {
-    const docs = await Revenue.find({}).lean();
+    const docs = await req.companyModels.Revenue.find({}).lean();
     const rows = docs.map((doc, index) => {
       const totalUnits = parseNum(doc.total_units);
       const totalSales = parseNum(doc.total_sales);
@@ -776,7 +786,7 @@ router.get('/revenue', async (req, res) => {
 // returns KPI cards + combo chart data (line vs bar) similar to Amazon.
 router.get('/marketing', async (req, res) => {
   try {
-    const docs = await Marketing.find({}).lean();
+    const docs = await req.companyModels.Marketing.find({}).lean();
 
     if (!docs || docs.length === 0) {
       return res.json({
@@ -1323,7 +1333,7 @@ router.get('/marketing', async (req, res) => {
 
 router.get('/inventory', async (req, res) => {
   try {
-    const docs = await Inventory.find({}).lean();
+    const docs = await req.companyModels.Inventory.find({}).lean();
 
     const rows = docs.map((doc, index) => {
       const availableInventory = Number(doc['Available Inventory'] ?? 0);
@@ -1444,7 +1454,7 @@ router.get('/inventory', async (req, res) => {
 
 router.get('/buybox', async (req, res) => {
   try {
-    const docs = await Buybox.find({}).lean();
+    const docs = await req.companyModels.Buybox.find({}).lean();
 
     const rows = docs.map((doc, index) => {
       const totalUnits = parseNum(doc.total_units);
