@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
+import { formatDateDDMonYY } from '../../utils/dateFormat';
 
 export default function ExecutiveSummary() {
   const [data, setData] = useState(null);
@@ -12,6 +13,7 @@ export default function ExecutiveSummary() {
   const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('declining');
   const [dateFilterType, setDateFilterType] = useState('CURRENT_DAY'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
   const [periodLabels, setPeriodLabels] = useState({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
+  const [salesChannelFilter, setSalesChannelFilter] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [asinModal, setAsinModal] = useState({ open: false, title: '', asins: [] });
@@ -82,9 +84,36 @@ export default function ExecutiveSummary() {
     return periodLabels;
   }, [periodLabels]);
 
+  const pickSalesChannel = (row) => {
+    const v =
+      row?.salesChannel ??
+      row?.channel ??
+      row?.['Sales Channel'];
+    if (v == null) return '';
+    const s = String(v).trim();
+    if (!s || s === '—') return '';
+    return s;
+  };
+
+  const salesChannelOptions = useMemo(() => {
+    const collect = (rows) =>
+      (Array.isArray(rows) ? rows : [])
+        .map((r) => pickSalesChannel(r))
+        .filter(Boolean);
+
+    const all = [...collect(revenueRows), ...collect(prevRevenueRows)];
+    const seen = new Map();
+    all.forEach((v) => {
+      const key = v.toLowerCase();
+      if (!seen.has(key)) seen.set(key, v);
+    });
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
+  }, [revenueRows, prevRevenueRows]);
+
   const tableRows = useMemo(() => {
     const currentRows = Array.isArray(revenueRows) ? revenueRows : [];
     const previousRows = Array.isArray(prevRevenueRows) ? prevRevenueRows : [];
+    const selectedChannel = salesChannelFilter ? String(salesChannelFilter).trim().toLowerCase() : '';
 
     const computePct = (curr, prev) => {
       const c = Number(curr) || 0;
@@ -105,7 +134,7 @@ export default function ExecutiveSummary() {
           productName: r?.productName ?? '—',
           productCategory: r?.productCategory ?? '—',
           packSize: r?.packSize ?? '—',
-          salesChannel: r?.salesChannel ?? '—',
+          salesChannel: pickSalesChannel(r) || '—',
           reportMonth: r?.reportMonth ?? '—',
           revenue: 0,
           units: 0,
@@ -115,7 +144,7 @@ export default function ExecutiveSummary() {
         if (!prev.productName || prev.productName === '—') prev.productName = r?.productName ?? prev.productName;
         if (!prev.productCategory || prev.productCategory === '—') prev.productCategory = r?.productCategory ?? prev.productCategory;
         if (!prev.packSize || prev.packSize === '—') prev.packSize = r?.packSize ?? prev.packSize;
-        if (!prev.salesChannel || prev.salesChannel === '—') prev.salesChannel = r?.salesChannel ?? prev.salesChannel;
+        if (!prev.salesChannel || prev.salesChannel === '—') prev.salesChannel = pickSalesChannel(r) || prev.salesChannel;
         if (!prev.reportMonth || prev.reportMonth === '—') prev.reportMonth = r?.reportMonth ?? prev.reportMonth;
         map.set(asin, prev);
       });
@@ -150,31 +179,35 @@ export default function ExecutiveSummary() {
       };
     });
 
+    const filteredByChannel = selectedChannel
+      ? merged.filter((r) => String(r.salesChannel || '').trim().toLowerCase() === selectedChannel)
+      : merged;
+
     if (activeDeepDiveTab === 'declining') {
-      return merged
+      return filteredByChannel
         .filter((r) => (Number(r.currentRevenue) || 0) < (Number(r.previousRevenue) || 0))
         .sort((a, b) => (Number(a.absDiffRevenue) || 0) - (Number(b.absDiffRevenue) || 0));
     }
     if (activeDeepDiveTab === 'increasing') {
-      return merged
+      return filteredByChannel
         .filter((r) => (Number(r.currentRevenue) || 0) > (Number(r.previousRevenue) || 0))
         .sort((a, b) => (Number(b.absDiffRevenue) || 0) - (Number(a.absDiffRevenue) || 0));
     }
     if (activeDeepDiveTab === 'traffic') {
       // Proxy "traffic" using unit decline (since Orders/PNL dataset in UI maps closest to units).
-      return merged
+      return filteredByChannel
         .filter((r) => r.pctChangeUnits != null && r.pctChangeUnits < 0)
         .sort((a, b) => (a.pctChangeUnits ?? 0) - (b.pctChangeUnits ?? 0));
     }
     if (activeDeepDiveTab === 'top_selling') {
-      return merged
+      return filteredByChannel
         .slice()
         .sort((a, b) => (b.currentRevenue ?? 0) - (a.currentRevenue ?? 0))
         .slice(0, 10);
     }
 
-    return merged;
-  }, [revenueRows, prevRevenueRows, activeDeepDiveTab]);
+    return filteredByChannel;
+  }, [revenueRows, prevRevenueRows, activeDeepDiveTab, salesChannelFilter]);
 
   const totalRows = tableRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
@@ -239,6 +272,23 @@ export default function ExecutiveSummary() {
         <div className="exec-header-right">
           <select
             className="deep-dive-period-select"
+            value={salesChannelFilter}
+            onChange={(e) => {
+              setSalesChannelFilter(e.target.value);
+              setPage(1);
+            }}
+            aria-label="Sales Channel"
+            style={{ marginRight: 10 }}
+          >
+            <option value="">Sales Channel (All)</option>
+            {salesChannelOptions.map((ch) => (
+              <option key={ch} value={ch}>
+                {ch}
+              </option>
+            ))}
+          </select>
+          <select
+            className="deep-dive-period-select"
             value={dateFilterType}
             onChange={(e) => {
               setDateFilterType(e.target.value);
@@ -262,7 +312,7 @@ export default function ExecutiveSummary() {
           {data.dataUpdated && (
             <p className="exec-updated-text">
               <span className="pulse-dot" />
-              Data updated as of <strong>{data.dataUpdated}</strong>
+              Data updated as of <strong>{data.dataUpdated ? formatDateDDMonYY(data.dataUpdated) : data.dataUpdated}</strong>
             </p>
           )}
         </div>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
+import { formatDateDDMonYY } from '../../utils/dateFormat';
 
 const STOCK_FILTERS = [
   { id: 'NO_BUYBOX', label: 'ASINs with no Buybox' },
@@ -49,17 +50,6 @@ const pick = (row, keys) => {
   return undefined;
 };
 
-// Display date as DD MMM YYYY (e.g. 09 Mar 2026) for UI consistency.
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const formatDateDisplay = (ymdStr) => {
-  if (!ymdStr || String(ymdStr).length < 10) return ymdStr;
-  const s = String(ymdStr).slice(0, 10);
-  const [y, m, d] = s.split('-');
-  const mi = parseInt(m, 10) - 1;
-  if (Number.isNaN(mi) || mi < 0 || mi > 11) return s;
-  return `${d.padStart(2, '0')} ${MONTHS[mi]} ${y}`;
-};
-
 export default function Buybox() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -87,7 +77,6 @@ export default function Buybox() {
   });
   const [comparison, setComparison] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState({
-    _id: true,
     asin: true,
     brand: true,
     productSubCategory: true,
@@ -137,32 +126,12 @@ export default function Buybox() {
     hijacker3: true,
     hijacker3Price: true,
     hijacker3MOQ: true,
-    hijacker4: true,
-    hijacker4Price: true,
-    hijacker4MOQ: true,
-    hijacker5: true,
-    hijacker5Price: true,
-    hijacker5MOQ: true,
-    hijacker6: true,
-    hijacker6Price: true,
-    hijacker6MOQ: true,
-    hijacker7: true,
-    hijacker7Price: true,
-    hijacker7MOQ: true,
-    hijacker8: true,
-    hijacker8Price: true,
-    hijacker8MOQ: true,
-    hijacker9: true,
-    hijacker9Price: true,
-    hijacker9MOQ: true,
-    hijacker10: true,
-    hijacker10Price: true,
-    hijacker10MOQ: true,
   });
   const [showColumnPicker, setShowColumnPicker] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [salesChannelOptionsFromApi, setSalesChannelOptionsFromApi] = useState([]);
   const [asinListModal, setAsinListModal] = useState(null); // null | 'with_buybox' | 'no_buybox'
 
   useEffect(() => {
@@ -180,6 +149,7 @@ export default function Buybox() {
         setRows(apiRows);
         setComparison(data?.comparison ?? null);
         setUpdatedAt(data?.updatedAt ?? null);
+        setSalesChannelOptionsFromApi(Array.isArray(data.salesChannelOptions) ? data.salesChannelOptions : []);
       })
       .catch((e) => {
         setError(e.message);
@@ -216,10 +186,18 @@ export default function Buybox() {
     () => Array.from(new Set(rowsForSelectedDate.map((r) => r.packSize).filter(Boolean))),
     [rowsForSelectedDate],
   );
-  const channelOptions = useMemo(
-    () => Array.from(new Set(rowsForSelectedDate.map((r) => r.salesChannel || r.channel).filter(Boolean))),
-    [rowsForSelectedDate],
-  );
+  // Use API-provided list (all unique Sales Channels in DB) when available; else derive from current rows
+  const channelOptions = useMemo(() => {
+    if (salesChannelOptionsFromApi.length > 0) {
+      return salesChannelOptionsFromApi;
+    }
+    const seen = new Map();
+    rows.forEach((r) => {
+      const val = String(r.salesChannel || r.channel || r['Sales Channel'] || '').trim();
+      if (val && !seen.has(val.toLowerCase())) seen.set(val.toLowerCase(), val);
+    });
+    return Array.from(seen.values()).sort((a, b) => String(a).localeCompare(String(b)));
+  }, [rows, salesChannelOptionsFromApi]);
 
   const filteredRows = useMemo(() => {
     return rowsForSelectedDate.filter((row) => {
@@ -244,8 +222,8 @@ export default function Buybox() {
       if (filters.productName && row.productName !== filters.productName) return false;
       if (filters.category && row.productCategory !== filters.category) return false;
       if (filters.packSize && row.packSize !== filters.packSize) return false;
-      const channelValue = row.salesChannel || row.channel;
-      if (filters.channel && channelValue !== filters.channel) return false;
+      const channelValue = String(row.salesChannel || row.channel || row['Sales Channel'] || '').trim();
+      if (filters.channel && channelValue.toLowerCase() !== filters.channel.toLowerCase()) return false;
 
       if (stockFilter === 'NO_BUYBOX' && isAmazonAeOwner(row.currentBuyboxOwner)) return false;
 
@@ -311,7 +289,7 @@ export default function Buybox() {
     filters.productName ||
     filters.category ||
     filters.packSize ||
-    filters.channel ||
+    filters.channel !== '' ||
     stockFilter !== 'ALL_SKUS';
 
   const kpiTrends = useMemo(() => {
@@ -401,7 +379,7 @@ export default function Buybox() {
   const pagedRows = filteredRows.slice(startIndex, endIndex);
 
   const dataUpdatedDate = updatedAt ? String(updatedAt).split('T')[0] : null;
-  const dataUpdatedDisplay = dataUpdatedDate ? formatDateDisplay(dataUpdatedDate) : null;
+  const dataUpdatedDisplay = dataUpdatedDate ? formatDateDDMonYY(dataUpdatedDate) : null;
 
   return (
     <>
@@ -472,7 +450,7 @@ export default function Buybox() {
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">Sales Channel</option>
+              <option value="">Select All</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -612,7 +590,6 @@ export default function Buybox() {
             {showColumnPicker && (
               <div className="column-picker">
                 {[
-                  { id: '_id', label: '_id' },
                   { id: 'asin', label: 'ASIN' },
                   { id: 'brand', label: 'Brand' },
                   { id: 'productSubCategory', label: 'Product Sub Category' },
@@ -662,27 +639,6 @@ export default function Buybox() {
                   { id: 'hijacker3', label: 'Hijacker 3' },
                   { id: 'hijacker3Price', label: 'Hijacker 3 Price' },
                   { id: 'hijacker3MOQ', label: 'Hijacker 3 MOQ' },
-                  { id: 'hijacker4', label: 'Hijacker 4' },
-                  { id: 'hijacker4Price', label: 'Hijacker 4 Price' },
-                  { id: 'hijacker4MOQ', label: 'Hijacker 4 MOQ' },
-                  { id: 'hijacker5', label: 'Hijacker 5' },
-                  { id: 'hijacker5Price', label: 'Hijacker 5 Price' },
-                  { id: 'hijacker5MOQ', label: 'Hijacker 5 MOQ' },
-                  { id: 'hijacker6', label: 'Hijacker 6' },
-                  { id: 'hijacker6Price', label: 'Hijacker 6 Price' },
-                  { id: 'hijacker6MOQ', label: 'Hijacker 6 MOQ' },
-                  { id: 'hijacker7', label: 'Hijacker 7' },
-                  { id: 'hijacker7Price', label: 'Hijacker 7 Price' },
-                  { id: 'hijacker7MOQ', label: 'Hijacker 7 MOQ' },
-                  { id: 'hijacker8', label: 'Hijacker 8' },
-                  { id: 'hijacker8Price', label: 'Hijacker 8 Price' },
-                  { id: 'hijacker8MOQ', label: 'Hijacker 8 MOQ' },
-                  { id: 'hijacker9', label: 'Hijacker 9' },
-                  { id: 'hijacker9Price', label: 'Hijacker 9 Price' },
-                  { id: 'hijacker9MOQ', label: 'Hijacker 9 MOQ' },
-                  { id: 'hijacker10', label: 'Hijacker 10' },
-                  { id: 'hijacker10Price', label: 'Hijacker 10 Price' },
-                  { id: 'hijacker10MOQ', label: 'Hijacker 10 MOQ' },
                 ].map((col) => (
                   <label key={col.id} className="column-picker-item">
                     <input
@@ -701,7 +657,6 @@ export default function Buybox() {
           <table className="data-table">
             <thead>
               <tr>
-                {visibleColumns._id && <th>_id</th>}
                 {visibleColumns.asin && <th>ASIN</th>}
                 {visibleColumns.brand && <th>Brand</th>}
                 {visibleColumns.productSubCategory && <th>Product Sub Category</th>}
@@ -751,33 +706,11 @@ export default function Buybox() {
                 {visibleColumns.hijacker3 && <th>Hijacker 3</th>}
                 {visibleColumns.hijacker3Price && <th>Hijacker 3 Price</th>}
                 {visibleColumns.hijacker3MOQ && <th>Hijacker 3 MOQ</th>}
-                {visibleColumns.hijacker4 && <th>Hijacker 4</th>}
-                {visibleColumns.hijacker4Price && <th>Hijacker 4 Price</th>}
-                {visibleColumns.hijacker4MOQ && <th>Hijacker 4 MOQ</th>}
-                {visibleColumns.hijacker5 && <th>Hijacker 5</th>}
-                {visibleColumns.hijacker5Price && <th>Hijacker 5 Price</th>}
-                {visibleColumns.hijacker5MOQ && <th>Hijacker 5 MOQ</th>}
-                {visibleColumns.hijacker6 && <th>Hijacker 6</th>}
-                {visibleColumns.hijacker6Price && <th>Hijacker 6 Price</th>}
-                {visibleColumns.hijacker6MOQ && <th>Hijacker 6 MOQ</th>}
-                {visibleColumns.hijacker7 && <th>Hijacker 7</th>}
-                {visibleColumns.hijacker7Price && <th>Hijacker 7 Price</th>}
-                {visibleColumns.hijacker7MOQ && <th>Hijacker 7 MOQ</th>}
-                {visibleColumns.hijacker8 && <th>Hijacker 8</th>}
-                {visibleColumns.hijacker8Price && <th>Hijacker 8 Price</th>}
-                {visibleColumns.hijacker8MOQ && <th>Hijacker 8 MOQ</th>}
-                {visibleColumns.hijacker9 && <th>Hijacker 9</th>}
-                {visibleColumns.hijacker9Price && <th>Hijacker 9 Price</th>}
-                {visibleColumns.hijacker9MOQ && <th>Hijacker 9 MOQ</th>}
-                {visibleColumns.hijacker10 && <th>Hijacker 10</th>}
-                {visibleColumns.hijacker10Price && <th>Hijacker 10 Price</th>}
-                {visibleColumns.hijacker10MOQ && <th>Hijacker 10 MOQ</th>}
               </tr>
             </thead>
             <tbody>
               {pagedRows.map((row) => (
                 <tr key={row._id ?? row.id ?? row.asin ?? `${row.productName || 'row'}-${row.reportDate || ''}`}>
-                  {visibleColumns._id && <td>{textOrZero(pick(row, ['_id', 'id']))}</td>}
                   {visibleColumns.asin && <td>{textOrZero(row.asin)}</td>}
                   {visibleColumns.brand && <td>{textOrZero(pick(row, ['Brand', 'brand']))}</td>}
                   {visibleColumns.productSubCategory && <td>{textOrZero(pick(row, ['Product Sub Category', 'productSubCategory']))}</td>}
@@ -797,7 +730,7 @@ export default function Buybox() {
                     <td>{(() => {
                       const v = pick(row, ['Date', 'reportDate']);
                       const s = v == null ? '' : String(v);
-                      return s ? formatDateDisplay(s.slice(0, 10)) : '0';
+                      return s ? formatDateDDMonYY(s.slice(0, 10)) : '0';
                     })()}</td>
                   )}
                   {visibleColumns.packSize && <td>{textOrZero(row.packSize)}</td>}
@@ -834,27 +767,6 @@ export default function Buybox() {
                   {visibleColumns.hijacker3 && <td>{textOrZero(pick(row, ['Hijacker 3', 'hijacker3']))}</td>}
                   {visibleColumns.hijacker3Price && <td>{formatAed(pick(row, ['Hijacker 3 Price', 'hijacker3Price']))}</td>}
                   {visibleColumns.hijacker3MOQ && <td>{textOrZero(pick(row, ['Hijacker 3 MOQ', 'hijacker3MOQ']))}</td>}
-                  {visibleColumns.hijacker4 && <td>{textOrZero(pick(row, ['Hijacker 4', 'hijacker4']))}</td>}
-                  {visibleColumns.hijacker4Price && <td>{formatAed(pick(row, ['Hijacker 4 Price', 'hijacker4Price']))}</td>}
-                  {visibleColumns.hijacker4MOQ && <td>{textOrZero(pick(row, ['Hijacker 4 MOQ', 'hijacker4MOQ']))}</td>}
-                  {visibleColumns.hijacker5 && <td>{textOrZero(pick(row, ['Hijacker 5', 'hijacker5']))}</td>}
-                  {visibleColumns.hijacker5Price && <td>{formatAed(pick(row, ['Hijacker 5 Price', 'hijacker5Price']))}</td>}
-                  {visibleColumns.hijacker5MOQ && <td>{textOrZero(pick(row, ['Hijacker 5 MOQ', 'hijacker5MOQ']))}</td>}
-                  {visibleColumns.hijacker6 && <td>{textOrZero(pick(row, ['Hijacker 6', 'hijacker6']))}</td>}
-                  {visibleColumns.hijacker6Price && <td>{formatAed(pick(row, ['Hijacker 6 Price', 'hijacker6Price']))}</td>}
-                  {visibleColumns.hijacker6MOQ && <td>{textOrZero(pick(row, ['Hijacker 6 MOQ', 'hijacker6MOQ']))}</td>}
-                  {visibleColumns.hijacker7 && <td>{textOrZero(pick(row, ['Hijacker 7', 'hijacker7']))}</td>}
-                  {visibleColumns.hijacker7Price && <td>{formatAed(pick(row, ['Hijacker 7 Price', 'hijacker7Price']))}</td>}
-                  {visibleColumns.hijacker7MOQ && <td>{textOrZero(pick(row, ['Hijacker 7 MOQ', 'hijacker7MOQ']))}</td>}
-                  {visibleColumns.hijacker8 && <td>{textOrZero(pick(row, ['Hijacker 8', 'hijacker8']))}</td>}
-                  {visibleColumns.hijacker8Price && <td>{formatAed(pick(row, ['Hijacker 8 Price', 'hijacker8Price']))}</td>}
-                  {visibleColumns.hijacker8MOQ && <td>{textOrZero(pick(row, ['Hijacker 8 MOQ', 'hijacker8MOQ']))}</td>}
-                  {visibleColumns.hijacker9 && <td>{textOrZero(pick(row, ['Hijacker 9', 'hijacker9']))}</td>}
-                  {visibleColumns.hijacker9Price && <td>{formatAed(pick(row, ['Hijacker 9 Price', 'hijacker9Price']))}</td>}
-                  {visibleColumns.hijacker9MOQ && <td>{textOrZero(pick(row, ['Hijacker 9 MOQ', 'hijacker9MOQ']))}</td>}
-                  {visibleColumns.hijacker10 && <td>{textOrZero(pick(row, ['Hijacker 10', 'hijacker10']))}</td>}
-                  {visibleColumns.hijacker10Price && <td>{formatAed(pick(row, ['Hijacker 10 Price', 'hijacker10Price']))}</td>}
-                  {visibleColumns.hijacker10MOQ && <td>{textOrZero(pick(row, ['Hijacker 10 MOQ', 'hijacker10MOQ']))}</td>}
                 </tr>
               ))}
             </tbody>

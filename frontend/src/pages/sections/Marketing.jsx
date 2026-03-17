@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Bar } from 'recharts';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
+import { formatDateDDMonYY } from '../../utils/dateFormat';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -301,9 +302,7 @@ export default function Marketing() {
     if (campaignFilters.campaignType) params.campaignType = campaignFilters.campaignType;
     if (campaignFilters.campaignName) params.campaignName = campaignFilters.campaignName;
     if (campaignFilters.portfolio) params.campaignPortfolio = campaignFilters.portfolio;
-    if (campaignFilters.salesChannel) {
-      params.campaignSalesChannel = campaignFilters.salesChannel;
-    }
+    if (campaignFilters.salesChannel) params.campaignSalesChannel = campaignFilters.salesChannel;
 
     const normalizeMarketingTotals = (resp) => {
       const metrics = resp?.metrics || {};
@@ -429,7 +428,7 @@ export default function Marketing() {
     filters.productName ||
     filters.productCategory ||
     filters.packSize ||
-    filters.salesChannel;
+    filters.salesChannel !== '';
 
   const clearAllFilters = () => {
     setFilters({ asin: '', productName: '', productCategory: '', packSize: '', salesChannel: '' });
@@ -466,8 +465,8 @@ export default function Marketing() {
 
   const dataUpdatedDate =
     data?.updatedAt
-      ? String(data.updatedAt).split('T')[0]
-      : '2025-02-23';
+      ? formatDateDDMonYY(String(data.updatedAt).split('T')[0])
+      : formatDateDDMonYY('2025-02-23');
 
   const chartData =
     data && !data.comingSoon && Array.isArray(data.chartData) && data.chartData.length > 0
@@ -565,10 +564,15 @@ export default function Marketing() {
     () => Array.from(new Set(skuRows.map((r) => r.packSize).filter(Boolean))),
     [skuRows],
   );
-  const salesChannelOptions = useMemo(
-    () => Array.from(new Set(skuRows.map((r) => r.salesChannel).filter(Boolean))),
-    [skuRows],
-  );
+  // Use API-provided list (all unique Sales Channels in DB) when available; else derive from skuRows
+  const salesChannelOptions = useMemo(() => {
+    if (data?.salesChannelOptions?.length > 0) {
+      return data.salesChannelOptions;
+    }
+    return Array.from(new Set(skuRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) =>
+      String(a).localeCompare(String(b)),
+    );
+  }, [data?.salesChannelOptions, skuRows]);
 
   const displayedSkuRows = useMemo(() => {
     let base = [...skuRows];
@@ -644,7 +648,15 @@ export default function Marketing() {
     () => Array.from(new Set(campaignRows.map((r) => r.campaignType).filter(Boolean))),
     [campaignRows],
   );
-  const campaignSalesChannelOptions = salesChannelOptions;
+  // Use same API list (all unique Sales Channels in DB) when available; else derive from campaign rows
+  const campaignSalesChannelOptions = useMemo(() => {
+    if (data?.salesChannelOptions?.length > 0) {
+      return data.salesChannelOptions;
+    }
+    return Array.from(new Set(campaignRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) =>
+      String(a).localeCompare(String(b)),
+    );
+  }, [data?.salesChannelOptions, campaignRows]);
   const campaignNameOptions = useMemo(
     () => Array.from(new Set(campaignRows.map((r) => r.campaignName).filter(Boolean))),
     [campaignRows],
@@ -668,7 +680,7 @@ export default function Marketing() {
     }
     if (campaignFilters.salesChannel) {
       base = base.filter(
-        (r) => String(r.salesChannel || '') === String(campaignFilters.salesChannel),
+        (r) => String(r.salesChannel || r.channel || '') === String(campaignFilters.salesChannel),
       );
     }
     if (campaignFilters.dateRange) {
@@ -922,7 +934,7 @@ export default function Marketing() {
               onChange={(e) => setFilters((f) => ({ ...f, salesChannel: e.target.value }))}
               aria-label="Sales Channel"
             >
-              <option value="">Sales Channel</option>
+              <option value="">Select All</option>
               {salesChannelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -1401,7 +1413,7 @@ export default function Marketing() {
                       </td>
                     ))}
                     {OTHER_COLUMNS.filter((c) => skuViewOtherColumns[c]).map((col) => (
-                      <td key={col} className="col-num">{row[col] ?? '—'}</td>
+                      <td key={col} className="col-num">{col === 'Date' ? (row[col] ? formatDateDDMonYY(row[col]) : '—') : (row[col] ?? '—')}</td>
                     ))}
                     <td className="cell-actions">
                       <button type="button" className="btn-quick-actions" aria-label="Quick actions" title="Quick actions">⋮</button>
@@ -1448,7 +1460,7 @@ export default function Marketing() {
               onChange={(e) => setCampaignFilters((f) => ({ ...f, salesChannel: e.target.value }))}
               aria-label="Sales Channel"
             >
-              <option value="">All</option>
+              <option value="">Select All</option>
               {campaignSalesChannelOptions.map((ch) => (
                 <option key={ch} value={ch}>{ch}</option>
               ))}

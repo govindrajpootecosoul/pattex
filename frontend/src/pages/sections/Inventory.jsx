@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
+import { formatDateDDMonYY } from '../../utils/dateFormat';
 
 const STOCK_FILTERS = [
   { id: 'ALL_SKUS', label: 'All SKUs' },
@@ -44,13 +45,26 @@ const computeSummary = (rows) => {
   return { totalAvailable, last30Sales, avgDos, instockRate };
 };
 
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const normalizeDateKey = (value) => {
   if (!value) return '';
-  const s = String(value);
-  if (s.length >= 10) return s.slice(0, 10);
+  const s = String(value).trim();
+  if (!s) return '';
+  if (s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const dddMonYyyy = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})/);
+  if (dddMonYyyy) {
+    const day = parseInt(dddMonYyyy[1], 10);
+    const monStr = dddMonYyyy[2];
+    const year = parseInt(dddMonYyyy[3], 10);
+    const mi = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === monStr.toLowerCase());
+    if (mi >= 0 && year && day >= 1 && day <= 31) {
+      const m = mi + 1;
+      return `${year}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
   const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toISOString().slice(0, 10);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return '';
 };
 
 export default function Inventory() {
@@ -135,7 +149,7 @@ export default function Inventory() {
       ? rowsForProductNames.filter((r) => r.productName === filters.productName)
       : rowsForProductNames;
   const asinOptions = Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean)));
-  const channelOptions = Array.from(new Set(rows.map((r) => r.channel).filter(Boolean)));
+  const channelOptions = Array.from(new Set(rows.map((r) => r.channel || r.salesChannel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
 
   const applyFilters = (row) => {
     if (filters.search) {
@@ -154,7 +168,7 @@ export default function Inventory() {
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && row.category !== filters.category) return false;
-    if (filters.channel && row.channel !== filters.channel) return false;
+    if (filters.channel && (row.channel || row.salesChannel) !== filters.channel) return false;
     return true;
   };
 
@@ -176,7 +190,7 @@ export default function Inventory() {
 
   const applyDateFilter = (row) => {
     if (!selectedDate) return true;
-    const rowDate = normalizeDateKey(row.oosDate);
+    const rowDate = row.reportDate || normalizeDateKey(row.oosDate);
     if (!rowDate) return false;
     return rowDate === selectedDate;
   };
@@ -217,7 +231,7 @@ export default function Inventory() {
     start.setDate(start.getDate() - 29); // inclusive 30-day window
 
     return filteredRowsNoDate.filter((row) => {
-      const key = normalizeDateKey(row.oosDate);
+      const key = row.reportDate || normalizeDateKey(row.oosDate);
       if (!key) return false;
       const d = new Date(key);
       if (Number.isNaN(d.getTime())) return false;
@@ -483,7 +497,7 @@ export default function Inventory() {
   const endIndex = startIndex + pageSize;
   const pagedRows = filteredRows.slice(startIndex, endIndex);
 
-  const dataUpdatedDate = updatedAt ? String(updatedAt).split('T')[0] : null;
+  const dataUpdatedDate = updatedAt ? formatDateDDMonYY(String(updatedAt).split('T')[0]) : null;
 
   return (
     <>
@@ -747,7 +761,7 @@ export default function Inventory() {
                   {visibleColumns.dos && <td className="col-num">{row.dos}</td>}
                   {visibleColumns.instockRate && <td className="col-num">{row.instockRate}%</td>}
                   {visibleColumns.openPos && <td className="col-num">{row.openPos}</td>}
-                  {visibleColumns.oosDate && <td>{row.oosDate}</td>}
+                  {visibleColumns.oosDate && <td>{row.oosDate ? formatDateDDMonYY(row.oosDate) : row.oosDate}</td>}
                   {visibleColumns.status && (
                     <td>
                       <span className={`badge ${getStatusBadgeClass(row.status)}`}>

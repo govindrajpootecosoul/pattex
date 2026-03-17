@@ -35,6 +35,9 @@ async function request(path, options = {}) {
 export const authApi = {
   login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   signup: (body) => request('/auth/signup', { method: 'POST', body: JSON.stringify(body) }),
+  getUsersByDatabase: () => request('/auth/users', { method: 'GET' }),
+  updateUser: (id, body) => request(`/auth/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),
 };
 
 export const dashboardApi = {

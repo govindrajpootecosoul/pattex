@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
+import { formatDateDDMonYY } from '../../utils/dateFormat';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -213,7 +214,7 @@ export default function Revenue() {
     [rowsForAsins],
   );
   const channelOptions = useMemo(
-    () => ['Overall', ...Array.from(new Set(revenueRows.map((r) => r.salesChannel).filter(Boolean)))],
+    () => ['Overall', ...Array.from(new Set(revenueRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)))],
     [revenueRows],
   );
 
@@ -235,7 +236,7 @@ export default function Revenue() {
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && row.productCategory !== filters.category) return false;
-    if (filters.channel && filters.channel !== 'Overall' && row.salesChannel !== filters.channel) return false;
+    if (filters.channel && filters.channel !== 'Overall' && (row.salesChannel || row.channel) !== filters.channel) return false;
     return true;
   };
 
@@ -700,7 +701,7 @@ export default function Revenue() {
     }));
   };
 
-  const dataUpdatedDate = updatedAt ? String(updatedAt).split('T')[0] : null;
+  const dataUpdatedDate = updatedAt ? formatDateDDMonYY(String(updatedAt).split('T')[0]) : null;
 
   if (loading) {
     return (
@@ -1010,7 +1011,7 @@ export default function Revenue() {
                     <td>{row.productCategory ?? '—'}</td>
                     <td>{row.packSize ?? '—'}</td>
                     <td>{row.salesChannel ?? '—'}</td>
-                    <td>{row.reportMonth ?? '—'}</td>
+                    <td>{row.reportMonth ? formatDateDDMonYY(row.reportMonth) : '—'}</td>
                     <td className="col-num">{Number(row.overallUnit) || 0}</td>
                     <td className="col-num">AED {Math.round(overallRevenue).toLocaleString()}</td>
                     <td className="col-num">{Number(row.adUnit) || 0}</td>

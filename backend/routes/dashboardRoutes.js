@@ -102,11 +102,34 @@ function toYmd(date) {
   return `${y}-${m}-${d}`;
 }
 
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function toDDMonYY(dateKey) {
+  if (!dateKey || dateKey === 'UNKNOWN') return dateKey;
+  const d = typeof dateKey === 'string' && dateKey.length >= 10 ? new Date(dateKey.slice(0, 10) + 'T00:00:00.000Z') : new Date(dateKey);
+  if (Number.isNaN(d.getTime())) return dateKey;
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const mon = MONTHS_SHORT[d.getUTCMonth()];
+  const yy = String(d.getUTCFullYear()).slice(-2);
+  return `${day}-${mon}-${yy}`;
+}
+
 function parseDateKey(value) {
   if (!value) return '';
   // Handles both Date objects and ISO/date-like strings.
   if (value instanceof Date && !Number.isNaN(value.getTime())) return toYmd(value);
-  const s = String(value);
+  const s = String(value).trim();
+  // Accept DD-MMM-YYYY (e.g. "13-Mar-2026")
+  const dddMonYyyy = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})/);
+  if (dddMonYyyy) {
+    const day = parseInt(dddMonYyyy[1], 10);
+    const monStr = dddMonYyyy[2];
+    const year = parseInt(dddMonYyyy[3], 10);
+    const mi = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === monStr.toLowerCase());
+    if (mi >= 0 && year && day >= 1 && day <= 31) {
+      const m = mi + 1;
+      return `${year}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
   // Accept `MM/DD/YYYY` or `DD/MM/YYYY` (heuristic: if first part > 12, treat as DD/MM).
   const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (slash) {
@@ -129,15 +152,45 @@ function parseDateKey(value) {
 
 function dateMatchQuery(fieldName, dateKey) {
   if (!dateKey) return {};
-  // Prefer string prefix match (covers strings with timestamps).
+  // Prefer string match (covers strings with timestamps).
   // If stored as Date type, also include range match.
+  //
+  // IMPORTANT: Date is often stored as strings like:
+  // - "YYYY-MM-DD"
+  // - "DD-MMM-YYYY" (e.g. "28-Feb-2026")
+  // - "DD-MMM-YY"   (e.g. "28-Feb-26")
+  // so we match all known representations for the same day.
   const start = new Date(`${dateKey}T00:00:00.000Z`);
   const end = new Date(`${dateKey}T23:59:59.999Z`);
+  const [yyyy, mm, dd] = String(dateKey).slice(0, 10).split('-');
+  const monthIndex = Math.max(0, Math.min(11, (parseInt(mm, 10) || 1) - 1));
+  const mon = MONTHS_SHORT[monthIndex];
+  const ddMonYYYY = `${dd}-${mon}-${yyyy}`;
+  const ddMonYY = `${dd}-${mon}-${String(yyyy).slice(-2)}`;
   return {
     $or: [
       { [fieldName]: { $regex: `^${dateKey}` } },
+      { [fieldName]: { $regex: `^${ddMonYYYY}` } },
+      { [fieldName]: { $regex: `^${ddMonYY}` } },
       { [fieldName]: { $gte: start, $lte: end } },
     ],
+  };
+}
+
+function mongoNumberExpr(fieldPath) {
+  return {
+    $convert: {
+      input: {
+        $replaceAll: {
+          input: { $toString: { $ifNull: [fieldPath, '0'] } },
+          find: ',',
+          replacement: '',
+        },
+      },
+      to: 'double',
+      onError: 0,
+      onNull: 0,
+    },
   };
 }
 
@@ -367,14 +420,26 @@ const productDetails = {
 router.get('/executive-summary', async (req, res) => {
   try {
     // Use the latest snapshot date across revenue + buybox datasets.
+    // IMPORTANT: Do NOT rely on `sort({ Date: -1 })` because Date is often a string
+    // like "13-Mar-2026", which doesn't sort chronologically.
     const [revenueDateKey, buyboxDateKey] = await Promise.all([
       (async () => {
-        const latestRevenueDoc = await req.companyModels.Revenue.findOne({}).sort({ Date: -1 }).lean();
-        return parseDateKey(latestRevenueDoc?.Date);
+        const docs = await req.companyModels.Revenue.find({}, { Date: 1 }).lean();
+        let best = '';
+        docs.forEach((d) => {
+          const key = parseDateKey(d?.Date);
+          if (key && (!best || key > best)) best = key;
+        });
+        return best;
       })(),
       (async () => {
-        const latestBuyboxDoc = await req.companyModels.Buybox.findOne({}).sort({ Date: -1 }).lean();
-        return parseDateKey(latestBuyboxDoc?.Date);
+        const docs = await req.companyModels.Buybox.find({}, { Date: 1 }).lean();
+        let best = '';
+        docs.forEach((d) => {
+          const key = parseDateKey(d?.Date);
+          if (key && (!best || key > best)) best = key;
+        });
+        return best;
       })(),
     ]);
 
@@ -393,11 +458,7 @@ router.get('/executive-summary', async (req, res) => {
         ...dateMatchQuery('Date', buyboxDateKeyEffective),
         $expr: {
           $gt: [
-            {
-              $toDouble: {
-                $ifNull: ['$Open POs', 0],
-              },
-            },
+            mongoNumberExpr('$Open POs'),
             0,
           ],
         },
@@ -410,18 +471,10 @@ router.get('/executive-summary', async (req, res) => {
             productName: { $first: '$Product Name' },
             salesChannel: { $first: '$Sales Channel' },
             openPOs: {
-              $sum: {
-                $toDouble: {
-                  $ifNull: ['$Open POs', 0],
-                },
-              },
+              $sum: mongoNumberExpr('$Open POs'),
             },
             poReceivedUnits: {
-              $sum: {
-                $toDouble: {
-                  $ifNull: ['$PO_received_Units', 0],
-                },
-              },
+              $sum: mongoNumberExpr('$PO_received_Units'),
             },
             currentOwner: {
               $first: {
@@ -462,11 +515,7 @@ router.get('/executive-summary', async (req, res) => {
         ...dateMatchQuery('Date', buyboxDateKeyEffective),
         $expr: {
           $gt: [
-            {
-              $toDouble: {
-                $ifNull: ['$PO_received_Units', 0],
-              },
-            },
+            mongoNumberExpr('$PO_received_Units'),
             0,
           ],
         },
@@ -479,18 +528,10 @@ router.get('/executive-summary', async (req, res) => {
             productName: { $first: '$Product Name' },
             salesChannel: { $first: '$Sales Channel' },
             openPOs: {
-              $sum: {
-                $toDouble: {
-                  $ifNull: ['$Open POs', 0],
-                },
-              },
+              $sum: mongoNumberExpr('$Open POs'),
             },
             poReceivedUnits: {
-              $sum: {
-                $toDouble: {
-                  $ifNull: ['$PO_received_Units', 0],
-                },
-              },
+              $sum: mongoNumberExpr('$PO_received_Units'),
             },
             currentOwner: {
               $first: {
@@ -534,21 +575,23 @@ router.get('/executive-summary', async (req, res) => {
             {
               $ne: [
                 {
-                  $toString: {
-                    $ifNull: [
-                      '$Current Owner',
-                      {
-                        $ifNull: [
-                          '$Current Owner ',
-                          {
-                            $ifNull: ['$CurrentOwner', '$currentOwner'],
-                          },
-                        ],
-                      },
-                    ],
+                  $toLower: {
+                    $toString: {
+                      $ifNull: [
+                        '$Current Owner',
+                        {
+                          $ifNull: [
+                            '$Current Owner ',
+                            {
+                              $ifNull: ['$CurrentOwner', '$currentOwner'],
+                            },
+                          ],
+                        },
+                      ],
+                    },
                   },
                 },
-                'Amazon.ae',
+                'amazon.ae',
               ],
             },
             {
@@ -583,18 +626,10 @@ router.get('/executive-summary', async (req, res) => {
             productName: { $first: '$Product Name' },
             salesChannel: { $first: '$Sales Channel' },
             openPOs: {
-              $sum: {
-                $toDouble: {
-                  $ifNull: ['$Open POs', 0],
-                },
-              },
+              $sum: mongoNumberExpr('$Open POs'),
             },
             poReceivedUnits: {
-              $sum: {
-                $toDouble: {
-                  $ifNull: ['$PO_received_Units', 0],
-                },
-              },
+              $sum: mongoNumberExpr('$PO_received_Units'),
             },
             currentOwner: {
               $first: {
@@ -667,9 +702,8 @@ router.get('/revenue', async (req, res) => {
       const adsSpend = parseNum(doc.ads_spend);
       const tacos = totalSales > 0 ? (adsSpend / totalSales) * 100 : 0;
       const snapshotDateKey = parseDateKey(doc.Date);
-      const dateStr = doc.Date != null ? String(doc.Date) : '';
+      const reportDate = snapshotDateKey || '';
       const reportMonth = snapshotDateKey ? snapshotDateKey.slice(0, 7) : '';
-      const reportDate = dateStr ? dateStr.slice(0, 10) : '';
 
       return {
         id: doc._id?.toString() || String(index + 1),
@@ -796,8 +830,18 @@ router.get('/marketing', async (req, res) => {
         funnelMetrics: [],
         skuRows: [],
         campaignMetrics: {},
+        campaignRows: [],
+        salesChannelOptions: [],
       });
     }
+
+    // Unique Sales Channel values from entire collection (for dropdowns, not limited by filters)
+    const salesChannelSet = new Set();
+    docs.forEach((doc) => {
+      const val = doc['Sales Channel'];
+      if (val != null && String(val).trim() !== '') salesChannelSet.add(String(val).trim());
+    });
+    const salesChannelOptions = Array.from(salesChannelSet).sort((a, b) => String(a).localeCompare(String(b)));
 
     const dateFilterType = req.query.dateFilterType || '';
     const customRangeStart = req.query.customRangeStart || '';
@@ -819,8 +863,8 @@ router.get('/marketing', async (req, res) => {
     const comparisonSet = periods ? new Set(periods.comparison) : null;
 
     const reportMonthForDoc = (doc) => {
-      const dateRaw = doc.Date != null ? String(doc.Date) : '';
-      return dateRaw ? dateRaw.slice(0, 7) : '';
+      const ymd = parseDateKey(doc.Date);
+      return ymd ? ymd.slice(0, 7) : '';
     };
 
     const applyMarketingFilters = (doc) => {
@@ -891,8 +935,7 @@ router.get('/marketing', async (req, res) => {
         });
       }
       const agg = byAsin.get(key);
-      const dateRaw = doc.Date != null ? String(doc.Date) : '';
-      const dateKey = dateRaw ? dateRaw.slice(0, 10) : '';
+      const dateKey = parseDateKey(doc.Date);
       if (dateKey && (!agg.latestDateKey || dateKey > agg.latestDateKey)) {
         agg.latestDateKey = dateKey;
         agg.availableInventoryLatest = parseNum(doc['Available Inventory']);
@@ -1037,8 +1080,7 @@ router.get('/marketing', async (req, res) => {
     let totalAdUnits = 0;
 
     docsForCurrent.forEach((doc) => {
-      const dateRaw = doc.Date != null ? String(doc.Date) : '';
-      const dateKey = dateRaw ? dateRaw.slice(0, 10) : 'UNKNOWN';
+      const dateKey = parseDateKey(doc.Date) || 'UNKNOWN';
 
       const impressions = parseNum(doc.Impressions);
       const clicks = parseNum(doc.Clicks);
@@ -1104,7 +1146,7 @@ router.get('/marketing', async (req, res) => {
       .map((entry) => {
         const dateLabel =
           entry.dateKey && entry.dateKey !== 'UNKNOWN'
-            ? new Date(entry.dateKey).toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
+            ? toDDMonYY(entry.dateKey)
             : entry.dateKey;
 
         const roas = entry.totalCost > 0 ? entry.sales / entry.totalCost : 0;
@@ -1148,8 +1190,7 @@ router.get('/marketing', async (req, res) => {
     const byDateCampaign = new Map();
 
     docsForCampaign.forEach((doc) => {
-      const dateRaw = doc.Date != null ? String(doc.Date) : '';
-      const dateKey = dateRaw ? dateRaw.slice(0, 10) : 'UNKNOWN';
+      const dateKey = parseDateKey(doc.Date) || 'UNKNOWN';
 
       const impressions = parseNum(doc.Impressions);
       const clicks = parseNum(doc.Clicks);
@@ -1189,7 +1230,7 @@ router.get('/marketing', async (req, res) => {
       .map((entry) => {
         const dateLabel =
           entry.dateKey && entry.dateKey !== 'UNKNOWN'
-            ? new Date(entry.dateKey).toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
+            ? toDDMonYY(entry.dateKey)
             : entry.dateKey;
 
         const roas = entry.totalCost > 0 ? entry.sales / entry.totalCost : 0;
@@ -1322,6 +1363,7 @@ router.get('/marketing', async (req, res) => {
       campaignMetrics,
       campaignRows,
       campaignChartData,
+      salesChannelOptions,
       updatedAt,
       ...(comparison && { comparison }),
     });
@@ -1344,45 +1386,50 @@ router.get('/inventory', async (req, res) => {
       const noLowStockWithOpenPos = Number(doc['No/Low Stock wt Open POs'] ?? 0);
       const noLowStockNoOpenPos = Number(doc['No/Low Stock wt no Open POs'] ?? 0);
       const stockStatus = doc.Stock_Status || '';
-      const salesChannel = doc['Sales Channel'] || '';
-      const date = doc.Date || '';
+      const salesChannel = doc['Sales Channel'] || doc.channel || '';
+      const reportDate = parseDateKey(doc.Date);
+      const reportMonth = reportDate ? reportDate.slice(0, 7) : '';
+      const oosDateValue = doc['OOS Date'] ?? doc.OOS_Date ?? doc.Date ?? '';
 
       return {
         id: doc._id?.toString() || String(index + 1),
         asin: doc.ASIN || '',
         productName: doc['Product Name'] || '',
         category: doc['Product Category'] || doc['Product Sub Category'] || 'UNKNOWN',
-        packSize: doc.Pack_Size || '',
+        packSize: doc['Pack Size'] != null ? String(doc['Pack Size']) : (doc.Pack_Size != null ? String(doc.Pack_Size) : ''),
         channel: salesChannel,
         available: availableInventory,
         last30DaysSales,
         dos,
         instockRate,
         openPos,
-        oosDate: date,
+        oosDate: oosDateValue,
+        reportDate,
         status: stockStatus,
         noLowStockWithOpenPos,
         noLowStockNoOpenPos,
         isLowStock:
           stockStatus === 'Low Stock' ||
           stockStatus === 'Critical' ||
-          stockStatus.toLowerCase().includes('low stock'),
+          (typeof stockStatus === 'string' && stockStatus.toLowerCase().includes('low stock')),
         hasOpenPo: openPos > 0,
-        reportMonth: date ? String(date).slice(0, 7) : '',
+        reportMonth,
       };
     });
 
-    // Latest data date for Inventory – for "Data updated as of".
+    // Latest data date for Inventory – for "Data updated as of". Use parseDateKey so DD-MMM-YYYY (e.g. "13-Mar-2026") is ordered correctly.
     const latestInventoryDoc = docs.reduce((latest, cur) => {
-      const curDate = cur.Date ? new Date(cur.Date) : null;
-      if (!curDate || Number.isNaN(curDate.getTime())) return latest;
+      const curKey = parseDateKey(cur.Date);
+      if (!curKey) return latest;
       if (!latest) return cur;
-      const latestDate = latest.Date ? new Date(latest.Date) : null;
-      if (!latestDate || Number.isNaN(latestDate.getTime())) return cur;
-      return curDate > latestDate ? cur : latest;
+      const latestKey = parseDateKey(latest.Date);
+      if (!latestKey) return cur;
+      return curKey >= latestKey ? cur : latest;
     }, null);
     const updatedAt = latestInventoryDoc?.Date
-      ? new Date(latestInventoryDoc.Date).toISOString()
+      ? (parseDateKey(latestInventoryDoc.Date)
+          ? new Date(parseDateKey(latestInventoryDoc.Date) + 'T12:00:00.000Z').toISOString()
+          : new Date(latestInventoryDoc.Date).toISOString())
       : new Date().toISOString();
 
     const dateFilterType = req.query.dateFilterType || '';
@@ -1417,12 +1464,12 @@ router.get('/inventory', async (req, res) => {
         if (!Number.isNaN(selectedDate.getTime())) {
           const prevDate = new Date(selectedDate);
           prevDate.setDate(prevDate.getDate() - 1);
-          const prevKey = parseDateKey(prevDate);
+          const prevKey = toYmd(prevDate);
 
-          const normalizeDocDate = (value) => parseDateKey(value);
+          const rowDateKey = (r) => r.reportDate || parseDateKey(r.oosDate);
 
-          const currentRows = rows.filter((r) => normalizeDocDate(r.oosDate) === selectedKey);
-          const comparisonRows = rows.filter((r) => normalizeDocDate(r.oosDate) === prevKey);
+          const currentRows = rows.filter((r) => rowDateKey(r) === selectedKey);
+          const comparisonRows = rows.filter((r) => rowDateKey(r) === prevKey);
 
           const curr = aggregateInventoryRows(currentRows);
           const prev = aggregateInventoryRows(comparisonRows);
@@ -1455,6 +1502,14 @@ router.get('/inventory', async (req, res) => {
 router.get('/buybox', async (req, res) => {
   try {
     const docs = await req.companyModels.Buybox.find({}).lean();
+
+    // Unique Sales Channel values from entire collection (for dropdown, not limited by date filter)
+    const salesChannelSet = new Set();
+    docs.forEach((doc) => {
+      const val = doc['Sales Channel'];
+      if (val != null && String(val).trim() !== '') salesChannelSet.add(String(val).trim());
+    });
+    const salesChannelOptions = Array.from(salesChannelSet).sort((a, b) => String(a).localeCompare(String(b)));
 
     const rows = docs.map((doc, index) => {
       const totalUnits = parseNum(doc.total_units);
@@ -1493,7 +1548,7 @@ router.get('/buybox', async (req, res) => {
         dos,
         instockRate,
         openPos,
-        oosDate: doc.OOS_Date || doc.OOS_Date_2 || doc.OOS_Date_3 || doc.OOS_Date_4 || doc.OOS_Date_5 || '',
+        oosDate: doc['OOS Date'] ?? doc.OOS_Date ?? doc.OOS_Date_2 ?? doc.OOS_Date_3 ?? doc.OOS_Date_4 ?? doc.OOS_Date_5 ?? '',
         stockStatus: doc.Stock_Status || '',
         totalUnits,
         totalSales,
@@ -1510,7 +1565,7 @@ router.get('/buybox', async (req, res) => {
         maxAvailableQty: parseNum(doc.max_available_qty),
         hasBuybox,
         currentBuyboxOwner: buyboxOwner,
-        currentBuyboxPrice: doc.Price ?? null,
+        currentBuyboxPrice: doc.Price ?? doc['Current Owner Price'] ?? null,
         currentVcPrice: doc['VC Ideal Price'] ?? null,
         currentScPrice: doc['SC Ideal Price'] ?? null,
         // direct mirrors of raw buybox sheet columns for UI table
@@ -1617,17 +1672,19 @@ router.get('/buybox', async (req, res) => {
       };
     });
 
-    // Latest data date for Buybox – for "Data updated as of".
+    // Latest data date for Buybox – for "Data updated as of". Use parseDateKey so DD-MMM-YYYY (e.g. "10-Feb-2026") is ordered correctly.
     const latestBuyboxDoc = docs.reduce((latest, cur) => {
-      const curDate = cur.Date ? new Date(cur.Date) : null;
-      if (!curDate || Number.isNaN(curDate.getTime())) return latest;
+      const curKey = parseDateKey(cur.Date);
+      if (!curKey) return latest;
       if (!latest) return cur;
-      const latestDate = latest.Date ? new Date(latest.Date) : null;
-      if (!latestDate || Number.isNaN(latestDate.getTime())) return cur;
-      return curDate > latestDate ? cur : latest;
+      const latestKey = parseDateKey(latest.Date);
+      if (!latestKey) return cur;
+      return curKey >= latestKey ? cur : latest;
     }, null);
     const updatedAt = latestBuyboxDoc?.Date
-      ? new Date(latestBuyboxDoc.Date).toISOString()
+      ? (parseDateKey(latestBuyboxDoc.Date)
+          ? new Date(parseDateKey(latestBuyboxDoc.Date) + 'T12:00:00.000Z').toISOString()
+          : new Date(latestBuyboxDoc.Date).toISOString())
       : new Date().toISOString();
 
     const dateFilterType = req.query.dateFilterType || '';
@@ -1694,6 +1751,7 @@ router.get('/buybox', async (req, res) => {
       title: 'Buybox',
       rows: rowsToReturn,
       total: rowsToReturn.length,
+      salesChannelOptions,
       updatedAt: updatedAtForResponse,
       ...(summaryFromApi && { summary: summaryFromApi }),
       ...(comparison && { comparison }),

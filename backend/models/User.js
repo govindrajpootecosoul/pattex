@@ -11,6 +11,20 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, required: true, trim: true },
     password: { type: String, required: true, minlength: 6, select: false },
     databaseName: { type: String, required: true, trim: true }, // company DB name (e.g. pattex, emami) on same cluster
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active',
+      required: true,
+      trim: true,
+    },
+    role: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+      required: true,
+      trim: true,
+    },
   },
   { timestamps: true, collection: USERS_COLLECTION }
 );
