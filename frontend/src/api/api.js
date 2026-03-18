@@ -1,4 +1,13 @@
-const API_BASE = '/api';
+function normalizeBaseUrl(raw) {
+  if (!raw) return '';
+  // Remove trailing slashes so we can safely do `${base}${path}`
+  return String(raw).trim().replace(/\/+$/, '');
+}
+
+// Configure once via Vite env:
+// - Local dev (recommended): leave unset and use Vite proxy for `/api`
+// - Production: set `VITE_API_BASE_URL=https://dashbackend.thrivebrands.ai/api`
+const API_BASE = normalizeBaseUrl(import.meta.env?.VITE_API_BASE_URL) || '/api';
 
 function isNetworkError(err) {
   const msg = (err && err.message) || '';
