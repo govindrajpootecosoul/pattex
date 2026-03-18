@@ -288,6 +288,7 @@ export default function Marketing() {
   const [campaignPerformanceCards, setCampaignPerformanceCards] = useState(['adSpend', 'overallRevenue', 'clicks', 'impressions']);
   const [skuPage, setSkuPage] = useState(1);
   const [skuPageSize, setSkuPageSize] = useState(20);
+  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -463,10 +464,25 @@ export default function Marketing() {
     };
   })();
 
-  const dataUpdatedDate =
-    data?.updatedAt
-      ? formatDateDDMonYY(String(data.updatedAt).split('T')[0])
-      : formatDateDDMonYY('2025-02-23');
+  useEffect(() => {
+    let cancelled = false;
+    const channel = filters.salesChannel ? String(filters.salesChannel).trim() : '';
+    dashboardApi
+      .getLatestUpdatedDate({ dataset: 'marketing', salesChannel: channel })
+      .then((resp) => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(null);
+      });
+    return () => { cancelled = true; };
+  }, [filters.salesChannel]);
+
+  const dataUpdatedDate = (latestUpdatedAtByChannel || data?.updatedAt)
+    ? formatDateDDMonYY(String(latestUpdatedAtByChannel || data.updatedAt).split('T')[0])
+    : null;
 
   const chartData =
     data && !data.comingSoon && Array.isArray(data.chartData) && data.chartData.length > 0

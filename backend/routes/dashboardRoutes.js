@@ -113,6 +113,26 @@ function toDDMonYY(dateKey) {
   return `${day}-${mon}-${yy}`;
 }
 
+function effectiveNowForDataLag() {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  now.setDate(now.getDate() - 3);
+  return now;
+}
+
+function currentYearMonthKey() {
+  const now = effectiveNowForDataLag();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+function monthShortFromYearMonth(ym) {
+  const m = parseInt(String(ym).split('-')[1] || '', 10);
+  const idx = Number.isFinite(m) ? m - 1 : -1;
+  return MONTHS_SHORT[Math.max(0, Math.min(11, idx))] || '';
+}
+
 function parseDateKey(value) {
   if (!value) return '';
   // Handles both Date objects and ISO/date-like strings.
@@ -183,6 +203,26 @@ function mongoNumberExpr(fieldPath) {
       input: {
         $replaceAll: {
           input: { $toString: { $ifNull: [fieldPath, '0'] } },
+          find: ',',
+          replacement: '',
+        },
+      },
+      to: 'double',
+      onError: 0,
+      onNull: 0,
+    },
+  };
+}
+
+function mongoNumberExprFromFirst(paths) {
+  const list = Array.isArray(paths) ? paths : [];
+  if (!list.length) return mongoNumberExpr('$__missing__');
+  const coalesced = list.reduceRight((acc, p) => ({ $ifNull: [p, acc] }), '0');
+  return {
+    $convert: {
+      input: {
+        $replaceAll: {
+          input: { $toString: coalesced },
           find: ',',
           replacement: '',
         },
@@ -417,8 +457,66 @@ const productDetails = {
 };
 
 // All dashboard routes return data; protected by auth
+router.get('/latest-updated-date', async (req, res) => {
+  try {
+    const datasetRaw = String(req.query.dataset || '').trim().toLowerCase();
+    const salesChannel = String(req.query.salesChannel || '').trim();
+
+    const datasetToModel = {
+      revenue: req.companyModels.Revenue,
+      inventory: req.companyModels.Inventory,
+      buybox: req.companyModels.Buybox,
+      marketing: req.companyModels.Marketing,
+    };
+
+    const Model = datasetToModel[datasetRaw];
+    if (!Model) {
+      return res.status(400).json({ message: 'Invalid dataset. Use: revenue | inventory | buybox | marketing' });
+    }
+
+    const filter = {};
+    if (salesChannel) {
+      filter.$or = [
+        { 'Sales Channel': salesChannel },
+        { salesChannel },
+        { channel: salesChannel },
+      ];
+    }
+
+    const docs = await Model.find(filter, { Date: 1 }).lean();
+    let best = '';
+    docs.forEach((d) => {
+      const key = parseDateKey(d?.Date);
+      if (key && (!best || key > best)) best = key;
+    });
+
+    const updatedAt = best ? `${best}T12:00:00.000Z` : new Date().toISOString();
+
+    return res.json({
+      dataset: datasetRaw,
+      salesChannel: salesChannel || '',
+      dateKey: best || '',
+      updatedAt,
+    });
+  } catch (error) {
+    console.error('Error fetching latest updated date:', error);
+    return res.status(500).json({ message: 'Failed to fetch latest updated date' });
+  }
+});
+
 router.get('/executive-summary', async (req, res) => {
   try {
+    const salesChannel = String(req.query.salesChannel || '').trim();
+    const buyboxChannelMatch = salesChannel
+      ? {
+          $or: [
+            { 'Sales Channel': salesChannel },
+            { salesChannel },
+            { channel: salesChannel },
+          ],
+        }
+      : {};
+
     // Use the latest snapshot date across revenue + buybox datasets.
     // IMPORTANT: Do NOT rely on `sort({ Date: -1 })` because Date is often a string
     // like "13-Mar-2026", which doesn't sort chronologically.
@@ -433,7 +531,7 @@ router.get('/executive-summary', async (req, res) => {
         return best;
       })(),
       (async () => {
-        const docs = await req.companyModels.Buybox.find({}, { Date: 1 }).lean();
+        const docs = await req.companyModels.Buybox.find(buyboxChannelMatch, { Date: 1 }).lean();
         let best = '';
         docs.forEach((d) => {
           const key = parseDateKey(d?.Date);
@@ -447,18 +545,90 @@ router.get('/executive-summary', async (req, res) => {
       [revenueDateKey, buyboxDateKey].filter(Boolean).sort().slice(-1)[0]
       || new Date().toISOString().slice(0, 10);
 
-    // All three metrics (OPEN POS, PO RECEIVED, SKU WT NO BUYBOX)
-    // are derived from the latest snapshot in the buyboxes collection.
+    // Executive Summary cards should not become 0 just because the newest
+    // snapshot date contains empty/zero values for those fields.
+    // So we pick the latest date where each metric actually exists (> 0).
+    const openPoExpr = mongoNumberExprFromFirst([
+      '$Open POs',
+      '$Open POs ',
+      '$Open PO',
+      '$Open PO ',
+      '$openPos',
+      '$open_pos',
+    ]);
+    const poReceivedUnitsExpr = mongoNumberExprFromFirst([
+      '$PO_received_Units',
+      '$PO_received_Units ',
+      '$PO Received Units',
+      '$PO Received Units ',
+      '$PO_received_units',
+      '$po_received_units',
+      '$poReceivedUnits',
+    ]);
+    const asinExpr = {
+      $ifNull: [
+        '$ASIN',
+        {
+          $ifNull: [
+            '$ASIN ',
+            { $ifNull: ['$asin', { $ifNull: ['$Asin', '$__missing_asin__'] }] },
+          ],
+        },
+      ],
+    };
+    const productNameExpr = {
+      $ifNull: ['$Product Name', { $ifNull: ['$Product Name ', { $ifNull: ['$productName', '$__missing_product__'] }] }],
+    };
+    const salesChannelExpr = {
+      $ifNull: [
+        '$Sales Channel',
+        {
+          $ifNull: [
+            '$Sales Channel ',
+            { $ifNull: ['$salesChannel', { $ifNull: ['$channel', '$__missing_channel__'] }] },
+          ],
+        },
+      ],
+    };
+    const currentOwnerExpr = {
+      $ifNull: [
+        '$Current Owner',
+        {
+          $ifNull: [
+            '$Current Owner ',
+            {
+              $ifNull: [
+                '$CurrentOwner',
+                {
+                  $ifNull: [
+                    '$currentOwner',
+                    {
+                      $ifNull: [
+                        '$BuyBox',
+                        { $ifNull: ['$Buy Box', { $ifNull: ['$currentBuyboxOwner', '$Current Buybox Owner'] }] },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    // Match Buybox page logic: use the latest snapshot date (optionally per Sales Channel),
+    // then compute "no buybox" as any Current Owner that is NOT Amazon.ae on that same date.
     const buyboxDateKeyEffective = buyboxDateKey || dataUpdated;
 
     // ASIN lists for the latest snapshot in buyboxes.
     const openPODetailsPromise = (async () => {
       // From pattex.buyboxes, column "Open POs" > 0 on latest date.
       const match = {
+        ...buyboxChannelMatch,
         ...dateMatchQuery('Date', buyboxDateKeyEffective),
         $expr: {
           $gt: [
-            mongoNumberExpr('$Open POs'),
+            openPoExpr,
             0,
           ],
         },
@@ -467,29 +637,17 @@ router.get('/executive-summary', async (req, res) => {
         { $match: match },
         {
           $group: {
-            _id: '$ASIN',
-            productName: { $first: '$Product Name' },
-            salesChannel: { $first: '$Sales Channel' },
+            _id: asinExpr,
+            productName: { $first: productNameExpr },
+            salesChannel: { $first: salesChannelExpr },
             openPOs: {
-              $sum: mongoNumberExpr('$Open POs'),
+              $sum: openPoExpr,
             },
             poReceivedUnits: {
-              $sum: mongoNumberExpr('$PO_received_Units'),
+              $sum: poReceivedUnitsExpr,
             },
             currentOwner: {
-              $first: {
-                $ifNull: [
-                  '$Current Owner',
-                  {
-                    $ifNull: [
-                      '$Current Owner ',
-                      {
-                        $ifNull: ['$CurrentOwner', '$currentOwner'],
-                      },
-                    ],
-                  },
-                ],
-              },
+              $first: currentOwnerExpr,
             },
           },
         },
@@ -512,10 +670,11 @@ router.get('/executive-summary', async (req, res) => {
     const poReceivedDetailsPromise = (async () => {
       // From pattex.buyboxes, column "PO_received_Units" > 0 on latest date.
       const match = {
+        ...buyboxChannelMatch,
         ...dateMatchQuery('Date', buyboxDateKeyEffective),
         $expr: {
           $gt: [
-            mongoNumberExpr('$PO_received_Units'),
+            poReceivedUnitsExpr,
             0,
           ],
         },
@@ -524,29 +683,17 @@ router.get('/executive-summary', async (req, res) => {
         { $match: match },
         {
           $group: {
-            _id: '$ASIN',
-            productName: { $first: '$Product Name' },
-            salesChannel: { $first: '$Sales Channel' },
+            _id: asinExpr,
+            productName: { $first: productNameExpr },
+            salesChannel: { $first: salesChannelExpr },
             openPOs: {
-              $sum: mongoNumberExpr('$Open POs'),
+              $sum: openPoExpr,
             },
             poReceivedUnits: {
-              $sum: mongoNumberExpr('$PO_received_Units'),
+              $sum: poReceivedUnitsExpr,
             },
             currentOwner: {
-              $first: {
-                $ifNull: [
-                  '$Current Owner',
-                  {
-                    $ifNull: [
-                      '$Current Owner ',
-                      {
-                        $ifNull: ['$CurrentOwner', '$currentOwner'],
-                      },
-                    ],
-                  },
-                ],
-              },
+              $first: currentOwnerExpr,
             },
           },
         },
@@ -568,51 +715,26 @@ router.get('/executive-summary', async (req, res) => {
 
     const skuNoBuyboxDetailsPromise = (async () => {
       // Distinct ASINs from buyboxes on latest date where Current Owner != Amazon.ae (and not blank).
+      const ownerLowerExpr = {
+        $toLower: {
+          $toString: {
+            $ifNull: [currentOwnerExpr, ''],
+          },
+        },
+      };
       const match = {
+        ...buyboxChannelMatch,
         ...dateMatchQuery('Date', buyboxDateKeyEffective),
         $expr: {
           $and: [
             {
-              $ne: [
-                {
-                  $toLower: {
-                    $toString: {
-                      $ifNull: [
-                        '$Current Owner',
-                        {
-                          $ifNull: [
-                            '$Current Owner ',
-                            {
-                              $ifNull: ['$CurrentOwner', '$currentOwner'],
-                            },
-                          ],
-                        },
-                      ],
-                    },
-                  },
+              // Not Amazon.ae (match any value containing amazon.ae)
+              $not: {
+                $regexMatch: {
+                  input: ownerLowerExpr,
+                  regex: /amazon\.ae/,
                 },
-                'amazon.ae',
-              ],
-            },
-            {
-              $ne: [
-                {
-                  $toString: {
-                    $ifNull: [
-                      '$Current Owner',
-                      {
-                        $ifNull: [
-                          '$Current Owner ',
-                          {
-                            $ifNull: ['$CurrentOwner', '$currentOwner'],
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                },
-                '',
-              ],
+              },
             },
           ],
         },
@@ -622,29 +744,17 @@ router.get('/executive-summary', async (req, res) => {
         { $match: match },
         {
           $group: {
-            _id: '$ASIN',
-            productName: { $first: '$Product Name' },
-            salesChannel: { $first: '$Sales Channel' },
+            _id: asinExpr,
+            productName: { $first: productNameExpr },
+            salesChannel: { $first: salesChannelExpr },
             openPOs: {
-              $sum: mongoNumberExpr('$Open POs'),
+              $sum: openPoExpr,
             },
             poReceivedUnits: {
-              $sum: mongoNumberExpr('$PO_received_Units'),
+              $sum: poReceivedUnitsExpr,
             },
             currentOwner: {
-              $first: {
-                $ifNull: [
-                  '$Current Owner',
-                  {
-                    $ifNull: [
-                      '$Current Owner ',
-                      {
-                        $ifNull: ['$CurrentOwner', '$currentOwner'],
-                      },
-                    ],
-                  },
-                ],
-              },
+              $first: currentOwnerExpr,
             },
           },
         },
@@ -688,9 +798,94 @@ router.get('/executive-summary', async (req, res) => {
     return res.json(executiveSummary);
   }
 });
+
+// Key Performance Metrics (Executive Summary KPI table)
+// - Targets: from `targets` collection (fields like Year, Month, Overall Sales, Ad Spend, Sales Channel)
+// - Actual (MTD): from `revenues` collection aggregated for current month (with T-3 lag)
+router.get('/key-performance-metrics', async (req, res) => {
+  try {
+    const salesChannel = String(req.query.salesChannel || '').trim();
+    const ym = currentYearMonthKey(); // YYYY-MM using effective now (today-3)
+    const year = parseInt(ym.slice(0, 4), 10);
+    const monthShort = monthShortFromYearMonth(ym); // e.g. "Jun"
+
+    // Targets (current month) — allow channel filter if provided
+    const targetFilter = {
+      $and: [
+        { $or: [{ Year: year }, { year }] },
+        { $or: [{ Month: monthShort }, { month: monthShort }] },
+      ],
+    };
+    if (salesChannel) {
+      targetFilter.$and.push({
+        $or: [
+          { 'Sales Channel': salesChannel },
+          { salesChannel },
+          { channel: salesChannel },
+        ],
+      });
+    }
+
+    const targetDocs = await req.companyModels.Target.find(targetFilter).lean();
+    const targetOverallRevenue = targetDocs.reduce((s, d) => s + parseNum(d?.['Overall Sales'] ?? d?.overallSales ?? d?.overall_sales), 0);
+    const targetOverallSpend = targetDocs.reduce((s, d) => s + parseNum(d?.['Ad Spend'] ?? d?.adSpend ?? d?.ad_spend), 0);
+
+    // Actual MTD (current month) from revenues
+    const revDocs = await req.companyModels.Revenue.find({}).lean();
+    const actualRows = revDocs.filter((d) => {
+      const dateKey = parseDateKey(d?.Date);
+      if (!dateKey) return false;
+      if (dateKey.slice(0, 7) !== ym) return false;
+      if (!salesChannel) return true;
+      const ch = String(d?.['Sales Channel'] ?? d?.salesChannel ?? d?.channel ?? '').trim();
+      return ch === salesChannel;
+    });
+    const actualOverallRevenue = actualRows.reduce((s, d) => s + parseNum(d?.total_sales ?? d?.totalSales ?? d?.['Overall Sales']), 0);
+    const actualOverallSpend = actualRows.reduce((s, d) => s + parseNum(d?.ads_spend ?? d?.adSpend ?? d?.['Ad Spend']), 0);
+
+    const variationPct = (actual, target) => {
+      const t = Number(target) || 0;
+      const a = Number(actual) || 0;
+      if (t === 0) return null;
+      return ((a - t) / t) * 100;
+    };
+
+    return res.json({
+      year,
+      month: monthShort,
+      yearMonth: ym,
+      salesChannel: salesChannel || '',
+      targets: {
+        overallRevenue: targetOverallRevenue,
+        overallSpend: targetOverallSpend,
+      },
+      actualMTD: {
+        overallRevenue: actualOverallRevenue,
+        overallSpend: actualOverallSpend,
+      },
+      variation: {
+        overallRevenuePct: variationPct(actualOverallRevenue, targetOverallRevenue),
+        overallSpendPct: variationPct(actualOverallSpend, targetOverallSpend),
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching key performance metrics:', error);
+    return res.status(500).json({ message: 'Failed to fetch key performance metrics' });
+  }
+});
 router.get('/revenue', async (req, res) => {
   try {
-    const docs = await req.companyModels.Revenue.find({}).lean();
+    const salesChannelFilter = String(req.query.salesChannel || '').trim();
+    const docFilter = {};
+    if (salesChannelFilter) {
+      docFilter.$or = [
+        { 'Sales Channel': salesChannelFilter },
+        { salesChannel: salesChannelFilter },
+        { channel: salesChannelFilter },
+      ];
+    }
+
+    const docs = await req.companyModels.Revenue.find(docFilter).lean();
     const rows = docs.map((doc, index) => {
       const totalUnits = parseNum(doc.total_units);
       const totalSales = parseNum(doc.total_sales);
@@ -711,7 +906,7 @@ router.get('/revenue', async (req, res) => {
         productName: doc['Product Name'] ?? '',
         productCategory: doc['Product Category'] ?? doc['Product Sub Category'] ?? '',
         packSize: doc['Pack Size'] != null ? String(doc['Pack Size']) : '',
-        salesChannel: doc['Sales Channel'] ?? '',
+        salesChannel: doc['Sales Channel'] ?? doc.salesChannel ?? doc.channel ?? '',
         reportMonth,
         snapshotDate: snapshotDateKey,
         reportDate,

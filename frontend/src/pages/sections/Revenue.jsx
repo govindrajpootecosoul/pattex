@@ -158,6 +158,7 @@ export default function Revenue() {
   const [pageSize, setPageSize] = useState(20);
   const [comparison, setComparison] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,6 +187,22 @@ export default function Revenue() {
     return () => { cancelled = true; };
   }, [dateFilterType, customRangeStart, customRangeEnd]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const channel = filters.channel ? String(filters.channel).trim() : '';
+    dashboardApi
+      .getLatestUpdatedDate({ dataset: 'revenue', salesChannel: channel })
+      .then((resp) => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(null);
+      });
+    return () => { cancelled = true; };
+  }, [filters.channel]);
+
   // Cascading options: Category -> Product Name -> ASIN
   const categoryOptions = useMemo(
     () => Array.from(new Set(revenueRows.map((r) => r.productCategory).filter(Boolean))),
@@ -213,10 +230,18 @@ export default function Revenue() {
     () => Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean))),
     [rowsForAsins],
   );
-  const channelOptions = useMemo(
-    () => ['Overall', ...Array.from(new Set(revenueRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)))],
-    [revenueRows],
-  );
+  const channelOptions = useMemo(() => {
+    const raw = Array.from(
+      new Set(
+        revenueRows
+          .map((r) => r.salesChannel || r.channel)
+          .filter(Boolean)
+          .map((v) => String(v).trim())
+          .filter(Boolean),
+      ),
+    );
+    return raw.sort((a, b) => String(a).localeCompare(String(b)));
+  }, [revenueRows]);
 
   const applyNonDateFilters = (row) => {
     if (filters.search) {
@@ -236,7 +261,7 @@ export default function Revenue() {
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && row.productCategory !== filters.category) return false;
-    if (filters.channel && filters.channel !== 'Overall' && (row.salesChannel || row.channel) !== filters.channel) return false;
+    if (filters.channel && (row.salesChannel || row.channel) !== filters.channel) return false;
     return true;
   };
 
@@ -701,7 +726,9 @@ export default function Revenue() {
     }));
   };
 
-  const dataUpdatedDate = updatedAt ? formatDateDDMonYY(String(updatedAt).split('T')[0]) : null;
+  const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
+    ? formatDateDDMonYY(String(latestUpdatedAtByChannel || updatedAt).split('T')[0])
+    : null;
 
   if (loading) {
     return (
@@ -780,7 +807,7 @@ export default function Revenue() {
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">{filters.channel ? 'Select All' : 'Sales Channel'}</option>
+              <option value="">Select All</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}

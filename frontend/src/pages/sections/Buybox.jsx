@@ -131,6 +131,7 @@ export default function Buybox() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [salesChannelOptionsFromApi, setSalesChannelOptionsFromApi] = useState([]);
   const [asinListModal, setAsinListModal] = useState(null); // null | 'with_buybox' | 'no_buybox'
 
@@ -157,6 +158,26 @@ export default function Buybox() {
       })
       .finally(() => setLoading(false));
   }, [selectedDate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const channel = filters.channel ? String(filters.channel).trim() : '';
+    dashboardApi
+      .getLatestUpdatedDate({ dataset: 'buybox', salesChannel: channel })
+      .then((resp) => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
+        const dateKey = resp?.dateKey ? String(resp.dateKey).slice(0, 10) : '';
+        if (dateKey && dateKey !== selectedDate) {
+          setSelectedDate(dateKey);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(null);
+      });
+    return () => { cancelled = true; };
+  }, [filters.channel]); // intentionally not depending on selectedDate to avoid loops
 
   const rowsForSelectedDate = useMemo(() => {
     if (!selectedDate) return rows;
@@ -378,7 +399,9 @@ export default function Buybox() {
   const endIndex = startIndex + pageSize;
   const pagedRows = filteredRows.slice(startIndex, endIndex);
 
-  const dataUpdatedDate = updatedAt ? String(updatedAt).split('T')[0] : null;
+  const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
+    ? String(latestUpdatedAtByChannel || updatedAt).split('T')[0]
+    : null;
   const dataUpdatedDisplay = dataUpdatedDate ? formatDateDDMonYY(dataUpdatedDate) : null;
 
   return (

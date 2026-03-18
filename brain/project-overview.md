@@ -27,8 +27,8 @@
 - **Light theme** (Business Compass–style): white/light gray backgrounds, dark text, orange accent (`--accent: #f59e0b`). Variables in `frontend/src/index.css` (`:root`). Dashboard and Auth use these variables; hover/backdrop values in `Dashboard.css` and `Auth.css` are tuned for light backgrounds.
 
 ## Run
-- Backend: `cd backend && npm install && npm run dev` → http://localhost:5000
-- Frontend: `cd frontend && npm install && npm run dev` → http://localhost:3000 (proxies /api to backend)
+- Backend: `cd backend && npm install && npm run dev` → http://localhost:3026
+- Frontend: `cd frontend && npm install && npm run dev` → http://localhost:3027 (proxies /api to backend)
 
 ## API
 - `POST /api/auth/signup` – body: { name, email, phone, password, databaseName }

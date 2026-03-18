@@ -12,7 +12,7 @@ Full-stack dashboard with login/signup and sections: Executive Summary, Revenue,
    Ensure `backend/.env` has:
    - `MONGO_URI` – your MongoDB connection string (database: `pattex`)
    - `JWT_SECRET` – any secret string
-   - `PORT` – e.g. 5000
+   - `PORT` – e.g. 3026
 
 2. **Frontend**
    ```bash
@@ -22,10 +22,10 @@ Full-stack dashboard with login/signup and sections: Executive Summary, Revenue,
 
 ## Run
 
-1. Start backend: `cd backend && npm run dev` → http://localhost:5000  
-2. Start frontend: `cd frontend && npm run dev` → http://localhost:3000  
+1. Start backend: `cd backend && npm run dev` → http://localhost:3026  
+2. Start frontend: `cd frontend && npm run dev` → http://localhost:3027  
 
-Frontend proxies `/api` to the backend. Open http://localhost:3000, sign up or log in, then use the sidebar to open each dashboard section.
+Frontend proxies `/api` to the backend. Open http://localhost:3027, sign up or log in, then use the sidebar to open each dashboard section.
 
 ## Project structure
 

@@ -7,6 +7,8 @@ export default function ExecutiveSummary() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [kpiData, setKpiData] = useState(null);
+  const [kpiLoading, setKpiLoading] = useState(true);
   const [revenueRows, setRevenueRows] = useState([]);
   const [prevRevenueRows, setPrevRevenueRows] = useState([]);
   const [revenueLoading, setRevenueLoading] = useState(true);
@@ -14,6 +16,7 @@ export default function ExecutiveSummary() {
   const [dateFilterType, setDateFilterType] = useState('CURRENT_DAY'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
   const [periodLabels, setPeriodLabels] = useState({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
   const [salesChannelFilter, setSalesChannelFilter] = useState('');
+  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [asinModal, setAsinModal] = useState({ open: false, title: '', asins: [] });
@@ -24,9 +27,13 @@ export default function ExecutiveSummary() {
   };
 
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
     dashboardApi
-      .getExecutiveSummary()
+      .getExecutiveSummary({ salesChannel: salesChannelFilter || '' })
       .then((payload) => {
+        if (cancelled) return;
         if (!payload) {
           setData(null);
           setError('Executive Summary returned no data.');
@@ -34,15 +41,57 @@ export default function ExecutiveSummary() {
         }
         setData(payload);
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [salesChannelFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    dashboardApi
+      .getLatestUpdatedDate({ dataset: 'revenue', salesChannel: salesChannelFilter || '' })
+      .then((resp) => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(null);
+      });
+    return () => { cancelled = true; };
+  }, [salesChannelFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setKpiLoading(true);
+    dashboardApi
+      // For now, KPI table should remain identical across VC/SC filters.
+      // So we intentionally do NOT pass salesChannel here.
+      .getKeyPerformanceMetrics()
+      .then((resp) => {
+        if (cancelled) return;
+        setKpiData(resp || null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setKpiData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setKpiLoading(false);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     setRevenueLoading(true);
     dashboardApi
-      .getRevenue({ dateFilterType, includePeriods: true })
+      .getRevenue({ dateFilterType, includePeriods: true, salesChannel: salesChannelFilter || '' })
       .then((res) => {
         if (cancelled) return;
         setRevenueRows(Array.isArray(res?.currentRows) ? res.currentRows : []);
@@ -76,7 +125,7 @@ export default function ExecutiveSummary() {
         if (!cancelled) setRevenueLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dateFilterType]);
+  }, [dateFilterType, salesChannelFilter]);
 
   // Hooks must run consistently across renders.
   // Compute table rows even during loading (safe defaults).
@@ -101,14 +150,21 @@ export default function ExecutiveSummary() {
         .map((r) => pickSalesChannel(r))
         .filter(Boolean);
 
-    const all = [...collect(revenueRows), ...collect(prevRevenueRows)];
+    const po = data?.poSummary || {};
+    const all = [
+      ...collect(revenueRows),
+      ...collect(prevRevenueRows),
+      ...collect(po.openPODetails),
+      ...collect(po.poReceivedDetails),
+      ...collect(po.skuNoBuyboxDetails),
+    ];
     const seen = new Map();
     all.forEach((v) => {
       const key = v.toLowerCase();
       if (!seen.has(key)) seen.set(key, v);
     });
     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
-  }, [revenueRows, prevRevenueRows]);
+  }, [revenueRows, prevRevenueRows, data?.poSummary]);
 
   const tableRows = useMemo(() => {
     const currentRows = Array.isArray(revenueRows) ? revenueRows : [];
@@ -215,28 +271,6 @@ export default function ExecutiveSummary() {
   const startIndex = (safePage - 1) * pageSize;
   const pagedRows = tableRows.slice(startIndex, startIndex + pageSize);
 
-  const openAsinModal = (type) => {
-    const summary = data?.poSummary || {};
-    if (!summary) return;
-    let title = '';
-    let rows = [];
-    if (type === 'OPEN_POS') {
-      title = 'OPEN POS – ASIN breakdown';
-      rows = Array.isArray(summary.openPODetails) ? summary.openPODetails : [];
-    } else if (type === 'PO_RECEIVED') {
-      title = 'PO RECEIVED – ASIN breakdown';
-      rows = Array.isArray(summary.poReceivedDetails) ? summary.poReceivedDetails : [];
-    } else if (type === 'SKU_NO_BUYBOX') {
-      title = 'SKU WT NO BUYBOX – ASIN breakdown';
-      rows = Array.isArray(summary.skuNoBuyboxDetails) ? summary.skuNoBuyboxDetails : [];
-    }
-    setAsinModal({
-      open: true,
-      title,
-      rows,
-    });
-  };
-
   if (loading) {
     return (
       <div className="exec-summary">
@@ -260,11 +294,87 @@ export default function ExecutiveSummary() {
     return `AED ${Math.round(n).toLocaleString()}`;
   };
 
-  // Force KPI table to show zeros for now (no API values).
-  const kpiRows = [
-    { metric: 'Overall Revenue', target: 0, actualMTD: 0, actualExpected: null, variation: null },
-    { metric: 'Overall Spend', target: 0, actualMTD: 0, actualExpected: null, variation: null },
-  ];
+  const normalizedSelectedChannel = salesChannelFilter ? String(salesChannelFilter).trim().toLowerCase() : '';
+  const filterPoRowsByChannel = (rows) => {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!normalizedSelectedChannel) return list;
+    return list.filter((r) => String(r?.salesChannel ?? '').trim().toLowerCase() === normalizedSelectedChannel);
+  };
+
+  const openPODetailsFiltered = filterPoRowsByChannel(poSummary.openPODetails);
+  const poReceivedDetailsFiltered = filterPoRowsByChannel(poSummary.poReceivedDetails);
+  const skuNoBuyboxDetailsFiltered = filterPoRowsByChannel(poSummary.skuNoBuyboxDetails);
+
+  const normalizeOwner = (owner) => String(owner ?? '').trim().toLowerCase();
+  const isAmazonAeOwner = (owner) => {
+    const s = normalizeOwner(owner);
+    // Treat any value containing "amazon.ae" as Amazon (e.g. "Amazon.ae (Retail)")
+    return Boolean(s) && s.includes('amazon.ae');
+  };
+
+  const sumBy = (rows, field) =>
+    (Array.isArray(rows) ? rows : []).reduce((s, r) => s + (Number(r?.[field]) || 0), 0);
+
+  const openPoSum = sumBy(openPODetailsFiltered, 'openPOs');
+  const poReceivedUnitsSum = sumBy(poReceivedDetailsFiltered, 'poReceivedUnits');
+  // Count ASINs where Current Owner is NOT Amazon.ae (and not blank).
+  const skuNoBuyboxRowsNoAmazon = skuNoBuyboxDetailsFiltered.filter((r) => {
+    const owner = normalizeOwner(r?.currentOwner);
+    // If owner is blank / "no", treat as not having Amazon buybox.
+    if (!owner || owner === 'no') return true;
+    return !isAmazonAeOwner(owner);
+  });
+  const asinWithoutAmazonBuyboxCount = skuNoBuyboxRowsNoAmazon.length;
+
+  const openAsinModal = (type) => {
+    const summary = data?.poSummary || {};
+    if (!summary) return;
+    let title = '';
+    let rows = [];
+    if (type === 'OPEN_POS') {
+      title = 'OPEN POS – ASIN breakdown';
+      rows = openPODetailsFiltered;
+    } else if (type === 'PO_RECEIVED') {
+      title = 'PO RECEIVED – ASIN breakdown';
+      rows = poReceivedDetailsFiltered;
+    } else if (type === 'SKU_NO_BUYBOX') {
+      title = 'ASIN WT NO BUYBOX – ASIN breakdown';
+      rows = skuNoBuyboxRowsNoAmazon;
+    }
+    setAsinModal({
+      open: true,
+      title,
+      rows,
+    });
+  };
+
+  const dataUpdatedDisplay = (() => {
+    const iso = latestUpdatedAtByChannel || data.dataUpdated || '';
+    const dateKey = iso ? String(iso).split('T')[0] : '';
+    return dateKey ? formatDateDDMonYY(dateKey) : null;
+  })();
+
+  const kpiRows = (() => {
+    const t = kpiData?.targets || {};
+    const a = kpiData?.actualMTD || {};
+    const v = kpiData?.variation || {};
+    return [
+      {
+        metric: 'Overall Revenue',
+        target: Math.round(Number(t.overallRevenue) || 0),
+        actualMTD: Math.round(Number(a.overallRevenue) || 0),
+        actualExpected: null,
+        variation: typeof v.overallRevenuePct === 'number' ? v.overallRevenuePct : null,
+      },
+      {
+        metric: 'Overall Spend',
+        target: Math.round(Number(t.overallSpend) || 0),
+        actualMTD: Math.round(Number(a.overallSpend) || 0),
+        actualExpected: null,
+        variation: typeof v.overallSpendPct === 'number' ? v.overallSpendPct : null,
+      },
+    ];
+  })();
 
   return (
     <div className="exec-summary" style={{ paddingTop: '16px', paddingBottom: 0 }}>
@@ -308,11 +418,11 @@ export default function ExecutiveSummary() {
 
       <section className="card exec-kpi-shell fade-in-up">
         <div className="exec-kpi-top">
-          <h3 className="exec-kpi-title">Key Performance Metrics</h3>
-          {data.dataUpdated && (
+          <h3 className="exec-kpi-title">Key Performance Metrics (Current month)</h3>
+          {dataUpdatedDisplay && (
             <p className="exec-updated-text">
               <span className="pulse-dot" />
-              Data updated as of <strong>{data.dataUpdated ? formatDateDDMonYY(data.dataUpdated) : data.dataUpdated}</strong>
+              Data updated as of <strong>{dataUpdatedDisplay}</strong>
             </p>
           )}
         </div>
@@ -320,7 +430,7 @@ export default function ExecutiveSummary() {
         <div className="exec-kpi-main">
           <div className="exec-metrics-main">
             <div className="exec-po-card">
-              <div className="exec-po-header">Key Performance Metrics</div>
+              <div className="exec-po-header">Key Performance Metrics (Current month)</div>
               <div className="table-wrap exec-table">
                 <table className="data-table exec-po-table">
                   <thead>
@@ -333,7 +443,14 @@ export default function ExecutiveSummary() {
                     </tr>
                   </thead>
                   <tbody>
-                    {kpiRows.map((row, i) => {
+                    {kpiLoading ? (
+                      <tr>
+                        <td colSpan={5} className="text-secondary">
+                          Loading current month targets and MTD actuals…
+                        </td>
+                      </tr>
+                    ) : (
+                    kpiRows.map((row, i) => {
                       const variationNumber =
                         typeof row.variation === 'number'
                           ? row.variation
@@ -366,7 +483,8 @@ export default function ExecutiveSummary() {
                           </td>
                         </tr>
                       );
-                    })}
+                    })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -381,7 +499,7 @@ export default function ExecutiveSummary() {
             >
               <div className="exec-stat-label">OPEN POS</div>
               <div className="exec-stat-value">
-                {poSummary.openPOs != null ? poSummary.openPOs.toLocaleString() : '—'}
+                {Math.round(openPoSum).toLocaleString()}
               </div>
             </button>
             <button
@@ -391,7 +509,7 @@ export default function ExecutiveSummary() {
             >
               <div className="exec-stat-label">PO RECEIVED</div>
               <div className="exec-stat-value">
-                {poSummary.poReceived != null ? poSummary.poReceived.toLocaleString() : '—'}
+                {Math.round(poReceivedUnitsSum).toLocaleString()}
               </div>
             </button>
             <button
@@ -399,9 +517,9 @@ export default function ExecutiveSummary() {
               className="exec-stat-card kpi-slate"
               onClick={() => openAsinModal('SKU_NO_BUYBOX')}
             >
-              <div className="exec-stat-label">SKU WT NO BUYBOX</div>
+              <div className="exec-stat-label">ASIN WT NO BUYBOX</div>
               <div className="exec-stat-value">
-                {poSummary.skuNoBuybox != null ? poSummary.skuNoBuybox.toLocaleString() : '—'}
+                {asinWithoutAmazonBuyboxCount.toLocaleString()}
               </div>
             </button>
           </div>

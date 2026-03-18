@@ -21,13 +21,18 @@ const buyboxSchema = new mongoose.Schema(
   { strict: false, collection: 'buyboxes' }
 );
 
+const targetSchema = new mongoose.Schema(
+  {},
+  { strict: false, collection: 'targets' }
+);
+
 const modelCache = new Map();
 
 /**
  * Get Revenue, Inventory, Marketing, Buybox models for a company database.
  * Uses same cluster as maindb; database name = company (e.g. pattex, emami).
  * @param {string} databaseName - Company DB name (e.g. 'pattex', 'emami')
- * @returns {{ Revenue: Model, Inventory: Model, Marketing: Model, Buybox: Model }}
+ * @returns {{ Revenue: Model, Inventory: Model, Marketing: Model, Buybox: Model, Target: Model }}
  */
 export function getCompanyModels(databaseName) {
   if (!databaseName || typeof databaseName !== 'string') {
@@ -46,6 +51,7 @@ export function getCompanyModels(databaseName) {
     Inventory: conn.models.Inventory ?? conn.model('Inventory', inventorySchema),
     Marketing: conn.models.Marketing ?? conn.model('Marketing', marketingSchema),
     Buybox: conn.models.Buybox ?? conn.model('Buybox', buyboxSchema),
+    Target: conn.models.Target ?? conn.model('Target', targetSchema),
   };
   modelCache.set(dbName, models);
   return models;

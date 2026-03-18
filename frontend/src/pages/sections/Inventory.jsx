@@ -110,6 +110,7 @@ export default function Inventory() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -133,6 +134,26 @@ export default function Inventory() {
       })
       .finally(() => setLoading(false));
   }, [selectedDate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const channel = filters.channel ? String(filters.channel).trim() : '';
+    dashboardApi
+      .getLatestUpdatedDate({ dataset: 'inventory', salesChannel: channel })
+      .then((resp) => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
+        const dateKey = resp?.dateKey ? String(resp.dateKey).slice(0, 10) : '';
+        if (dateKey && dateKey !== selectedDate) {
+          setSelectedDate(dateKey);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLatestUpdatedAtByChannel(null);
+      });
+    return () => { cancelled = true; };
+  }, [filters.channel]); // intentionally not depending on selectedDate to avoid loops
 
   // Cascading options: Category -> Product Name -> ASIN
   const categoryOptions = Array.from(new Set(rows.map((r) => r.category).filter(Boolean)));
@@ -497,7 +518,9 @@ export default function Inventory() {
   const endIndex = startIndex + pageSize;
   const pagedRows = filteredRows.slice(startIndex, endIndex);
 
-  const dataUpdatedDate = updatedAt ? formatDateDDMonYY(String(updatedAt).split('T')[0]) : null;
+  const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
+    ? formatDateDDMonYY(String(latestUpdatedAtByChannel || updatedAt).split('T')[0])
+    : null;
 
   return (
     <>

@@ -41,12 +41,31 @@ export const authApi = {
 };
 
 export const dashboardApi = {
-  getExecutiveSummary: () => request('/dashboard/executive-summary'),
+  getExecutiveSummary: (params) => {
+    const q = new URLSearchParams();
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    const query = q.toString();
+    return request(`/dashboard/executive-summary${query ? `?${query}` : ''}`);
+  },
+  getKeyPerformanceMetrics: (params) => {
+    const q = new URLSearchParams();
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    const query = q.toString();
+    return request(`/dashboard/key-performance-metrics${query ? `?${query}` : ''}`);
+  },
+  getLatestUpdatedDate: (params) => {
+    const q = new URLSearchParams();
+    if (params?.dataset) q.set('dataset', params.dataset);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    const query = q.toString();
+    return request(`/dashboard/latest-updated-date${query ? `?${query}` : ''}`);
+  },
   getRevenue: (params) => {
     const q = new URLSearchParams();
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
     if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
     if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
     if (params?.includePeriods) q.set('includePeriods', '1');
     const query = q.toString();
     return request(`/dashboard/revenue${query ? `?${query}` : ''}`);
