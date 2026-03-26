@@ -1072,7 +1072,7 @@ router.get('/key-performance-metrics', async (req, res) => {
 router.get('/revenue', async (req, res) => {
   try {
     // Bump cache key version so channel/date fixes take effect immediately.
-    const cacheKey = buildDashboardCacheKey(req, 'revenue:v3');
+    const cacheKey = buildDashboardCacheKey(req, 'revenue:v4');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -1196,14 +1196,33 @@ router.get('/revenue', async (req, res) => {
         const asin = revenueAsinFromDoc(doc);
         const productName = revenueProductNameFromDoc(doc);
         const salesChannel = revenueChannelFromDoc(doc);
+        const productCategory =
+          doc.product_category ??
+          doc.product_sub_category ??
+          doc['Product Category'] ??
+          doc['Product Sub Category'] ??
+          doc.productCategory ??
+          doc.productSubCategory ??
+          '';
+        const packSizeRaw =
+          doc.pack_size ??
+          doc['Pack Size'] ??
+          doc.Pack_Size ??
+          doc.packSize ??
+          '';
+        const packSize = packSizeRaw != null ? String(packSizeRaw) : '';
 
         return {
           id: doc._id?.toString() || String(index + 1),
           Date: doc.Date || doc.date || doc.DATE || '',
           asin,
           productName,
-          productCategory: doc['Product Category'] ?? doc['Product Sub Category'] ?? '',
-          packSize: doc['Pack Size'] != null ? String(doc['Pack Size']) : '',
+          // Keep legacy camelCase for existing frontend use, but ensure it is always populated.
+          productCategory,
+          packSize,
+          // Also expose canonical snake_case keys (as requested) for consumers.
+          product_category: productCategory,
+          pack_size: packSize,
           salesChannel,
           reportMonth,
           snapshotDate: snapshotDateKey,
@@ -2271,7 +2290,8 @@ router.get('/marketing', async (req, res) => {
 
 router.get('/inventory', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'inventory');
+    // Bump cache key version so category field fixes apply immediately.
+    const cacheKey = buildDashboardCacheKey(req, 'inventory:v4');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -2345,7 +2365,7 @@ router.get('/inventory', async (req, res) => {
     const docs = await req.companyModels.Inventory.find(Object.keys(docsFilter).length ? docsFilter : {}).lean();
 
     const rows = docs.map((doc, index) => {
-      const availableInventory = Number(doc['Available Inventory'] ?? doc.available_inventory ?? 0);
+      const availableInventory = Number(doc['Available Inventory'] ?? doc.available_inventory ?? doc.availableInventory ?? 0);
       const last30DaysSales = Number(doc.total_sales ?? 0);
       const dos = Number(doc.DOS ?? doc.dos ?? 0);
       const instockRate = Number(doc['Instock Rate'] ?? doc.instock_rate ?? 0);
@@ -2353,7 +2373,7 @@ router.get('/inventory', async (req, res) => {
       const noLowStockWithOpenPos = Number(doc['No/Low Stock wt Open POs'] ?? doc['no/low_stock_wt_open_pos'] ?? 0);
       const noLowStockNoOpenPos = Number(doc['No/Low Stock wt no Open POs'] ?? doc['no/low_stock_wt_no_open_pos'] ?? 0);
       const stockStatus = doc.Stock_Status || doc.stock_status || '';
-      const salesChannel = revenueChannelFromDoc(doc) || '';
+      const salesChannel = doc.sales_channel ?? doc.salesChannel ?? revenueChannelFromDoc(doc) ?? '';
       const reportDate = parseDateKey(
         getFieldValueLoose(doc, 'Date') ??
         getFieldValueLoose(doc, 'date') ??
@@ -2362,14 +2382,37 @@ router.get('/inventory', async (req, res) => {
       );
       const reportMonth = reportDate ? reportDate.slice(0, 7) : '';
       const oosDateValue = doc['OOS Date'] ?? doc.OOS_Date ?? getFieldValueLoose(doc, 'Date') ?? '';
+      // Category fields can have messy keys (NBSP, casing, underscores). Prefer snake_case,
+      // but fall back to "loose" header matching for CSV-imported columns.
+      const productCategory =
+        doc.product_category ??
+        doc.product_sub_category ??
+        getFieldValueLoose(doc, 'Product Category') ??
+        getFieldValueLoose(doc, 'Product Sub Category') ??
+        doc['Product Category'] ??
+        doc['Product Sub Category'] ??
+        doc.productCategory ??
+        doc.productSubCategory ??
+        '';
+      const packSizeRaw =
+        doc.pack_size ??
+        doc['Pack Size'] ??
+        doc.Pack_Size ??
+        doc.packSize ??
+        '';
+      const packSize = packSizeRaw != null ? String(packSizeRaw) : '';
 
       return {
         id: doc._id?.toString() || String(index + 1),
-        asin: revenueAsinFromDoc(doc) || '',
-        productName: revenueProductNameFromDoc(doc) || '',
-        category: doc['Product Category'] || doc['Product Sub Category'] || 'UNKNOWN',
-        packSize: doc['Pack Size'] != null ? String(doc['Pack Size']) : (doc.Pack_Size != null ? String(doc.Pack_Size) : ''),
+        asin: doc.asin ?? revenueAsinFromDoc(doc) ?? '',
+        productName: doc.product_name ?? doc.productName ?? revenueProductNameFromDoc(doc) ?? '',
+        // Keep legacy `category` (used by UI filters), but source from canonical `product_category`.
+        category: productCategory || 'UNKNOWN',
+        product_category: productCategory,
+        packSize,
+        pack_size: packSize,
         channel: salesChannel,
+        sales_channel: salesChannel,
         available: availableInventory,
         last30DaysSales,
         dos,

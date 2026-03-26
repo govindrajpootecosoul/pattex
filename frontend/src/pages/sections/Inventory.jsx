@@ -86,6 +86,27 @@ const normalizeDateKey = (value) => {
   return '';
 };
 
+function getRowProductCategory(row) {
+  if (!row) return '';
+  return (
+    row.product_category ??
+    row.productCategory ??
+    row.category ??
+    row.product_sub_category ??
+    row.productSubCategory ??
+    row['Product Category'] ??
+    row['Product Sub Category'] ??
+    ''
+  );
+}
+
+function truncateText(value, maxChars) {
+  const s = value == null ? '' : String(value);
+  if (!maxChars || maxChars <= 0) return s;
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}...`;
+}
+
 export default function Inventory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -148,6 +169,7 @@ export default function Inventory() {
     return defaults;
   });
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const columnPickerWrapRef = useRef(null);
   const selectAllColumnsRef = useRef(null);
   const [columnOrder, setColumnOrder] = useState(() => {
     try {
@@ -218,10 +240,10 @@ export default function Inventory() {
   }, [filters.channel]); // intentionally not depending on selectedDate to avoid loops
 
   // Cascading options: Category -> Product Name -> ASIN
-  const categoryOptions = Array.from(new Set(rows.map((r) => r.category).filter(Boolean)));
+  const categoryOptions = Array.from(new Set(rows.map(getRowProductCategory).filter(Boolean)));
 
   const rowsForProductNames = filters.category
-    ? rows.filter((r) => r.category === filters.category)
+    ? rows.filter((r) => getRowProductCategory(r) === filters.category)
     : rows;
   const productNameOptions = Array.from(
     new Set(rowsForProductNames.map((r) => r.productName).filter(Boolean)),
@@ -269,7 +291,7 @@ export default function Inventory() {
     }
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
-    if (filters.category && row.category !== filters.category) return false;
+    if (filters.category && getRowProductCategory(row) !== filters.category) return false;
     if (filters.channel && (row.channel || row.salesChannel) !== filters.channel) return false;
     return true;
   };
@@ -572,6 +594,27 @@ export default function Inventory() {
     }
   }, [visibleColumns]);
 
+  useEffect(() => {
+    if (!showColumnPicker) return;
+    const onPointerDown = (e) => {
+      const el = columnPickerWrapRef.current;
+      if (!el) return;
+      if (el.contains(e.target)) return;
+      setShowColumnPicker(false);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setShowColumnPicker(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showColumnPicker]);
+
   const openMetricModal = (metricId) => {
     setMetricModal(metricId);
   };
@@ -706,6 +749,27 @@ export default function Inventory() {
           z-index: 5;
           background: var(--card-bg, #fff);
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+
+        /* Inventory table: keep Product Name in one line + wider */
+        .inventory-col-product-name {
+          min-width: 260px;
+          width: 260px;
+        }
+
+        .inventory-col-product-name .cell-product {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        /* Inventory table: keep Product Category in one line + wider */
+        .inventory-col-category {
+          min-width: 200px;
+          width: 200px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
       `}</style>
       <div className="card inventory-filters-card">
@@ -880,7 +944,7 @@ export default function Inventory() {
               {f.label}
             </button>
           ))}
-          <div className="column-picker-wrap">
+          <div className="column-picker-wrap" ref={columnPickerWrapRef}>
             <button
               type="button"
               className="btn-chip"
@@ -938,7 +1002,15 @@ export default function Inventory() {
                   const col = columnDefsById[id];
                   if (!col) return null;
                   const numCols = new Set(['available', 'sales30', 'dos', 'instockRate', 'openPos']);
-                  return <th key={id} className={numCols.has(id) ? 'col-num' : ''}>{col.label}</th>;
+                  const cls =
+                    id === 'productName'
+                      ? 'inventory-col-product-name'
+                      : id === 'category'
+                        ? 'inventory-col-category'
+                        : numCols.has(id)
+                          ? 'col-num'
+                          : '';
+                  return <th key={id} className={cls}>{col.label}</th>;
                 })}
                 <th className="cell-actions" aria-label="Actions" />
               </tr>
@@ -951,18 +1023,26 @@ export default function Inventory() {
                     if (id === 'asin') return <td key={id}><span className="text-secondary">{row.asin}</span></td>;
                     if (id === 'productName') {
                       return (
-                        <td key={id}>
+                        <td key={id} className="inventory-col-product-name">
                           <div className="cell-product">
-                            <div className="table-thumb" aria-hidden>—</div>
                             <div>
-                              <div>{row.productName}</div>
+                              <div title={row.productName || ''}>
+                                {row.productName ? truncateText(row.productName, 30) : '—'}
+                              </div>
                               {!visibleColumns.asin && row.asin && <div className="text-secondary">{row.asin}</div>}
                             </div>
                           </div>
                         </td>
                       );
                     }
-                    if (id === 'category') return <td key={id}>{row.category}</td>;
+                    if (id === 'category') {
+                      const cat = getRowProductCategory(row);
+                      return (
+                        <td key={id} className="inventory-col-category" title={cat || ''}>
+                          {cat}
+                        </td>
+                      );
+                    }
                     if (id === 'packSize') return <td key={id}>{row.packSize}</td>;
                     if (id === 'channel') return <td key={id}>{row.channel}</td>;
                     if (id === 'available') return <td key={id} className="col-num">{row.available}</td>;

@@ -103,6 +103,13 @@ const formatAed = (value) => {
   return `AED ${Math.round(n).toLocaleString()}`;
 };
 
+function truncateText(value, maxChars) {
+  const s = value == null ? '' : String(value);
+  if (!maxChars || maxChars <= 0) return s;
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}...`;
+}
+
 const parseNumLoose = (value) => {
   if (value == null || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -499,8 +506,18 @@ export default function Buybox() {
     switch (id) {
       case 'brand': return textOrZero(pick(row, ['Brand', 'brand']));
       case 'asin': return textOrZero(row.asin);
-      case 'productName': return textOrZero(pick(row, ['Product Name', 'productName']));
-      case 'productCategory': return textOrZero(pick(row, ['Product Category', 'productCategory']));
+      case 'productName': {
+        const raw = pick(row, ['Product Name', 'productName', 'product_name']);
+        const full = raw == null ? '' : String(raw);
+        const display = full ? truncateText(full, 30) : '0';
+        return <span title={full} className="buybox-cell-ellipsis">{display}</span>;
+      }
+      case 'productCategory': {
+        const raw = pick(row, ['Product Category', 'productCategory', 'product_category']);
+        const full = raw == null ? '' : String(raw);
+        const display = full ? full : '0';
+        return <span title={full} className="buybox-cell-ellipsis">{display}</span>;
+      }
       case 'packType': return textOrZero(pick(row, ['Pack Type', 'packType']));
       case 'packSize': return textOrZero(row.packSize);
       case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
@@ -737,6 +754,26 @@ export default function Buybox() {
           z-index: 5;
           background: var(--card-bg, #fff);
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+
+        /* Buybox table: keep Product Name/Category in one line */
+        .buybox-col-product-name {
+          min-width: 260px;
+          width: 260px;
+        }
+
+        .buybox-col-product-category {
+          min-width: 200px;
+          width: 200px;
+        }
+
+        .buybox-cell-ellipsis {
+          display: inline-block;
+          max-width: 100%;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          vertical-align: bottom;
         }
       `}</style>
       <div className="card inventory-filters-card">
@@ -991,7 +1028,13 @@ export default function Buybox() {
                   const def = columnDefsById[id];
                   if (!def) return null;
                   if (!visibleColumns[id]) return null;
-                  return <th key={id}>{def.label}</th>;
+                  const cls =
+                    id === 'productName'
+                      ? 'buybox-col-product-name'
+                      : id === 'productCategory'
+                        ? 'buybox-col-product-category'
+                        : '';
+                  return <th key={id} className={cls}>{def.label}</th>;
                 })}
               </tr>
             </thead>
@@ -1000,7 +1043,13 @@ export default function Buybox() {
                 <tr key={row._id ?? row.id ?? row.asin ?? `${row.productName || 'row'}-${row.reportDate || ''}`}>
                   {visibleOrderedColumnIds.map((id) => {
                     if (!visibleColumns[id]) return null;
-                    return <td key={id}>{renderCellByColumnId(id, row)}</td>;
+                    const cls =
+                      id === 'productName'
+                        ? 'buybox-col-product-name'
+                        : id === 'productCategory'
+                          ? 'buybox-col-product-category'
+                          : '';
+                    return <td key={id} className={cls}>{renderCellByColumnId(id, row)}</td>;
                   })}
                 </tr>
               ))}

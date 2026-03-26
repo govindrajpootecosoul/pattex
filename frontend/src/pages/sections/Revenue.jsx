@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
@@ -26,6 +26,29 @@ const METRIC_IDS = {
   AOV: 'AOV',
   TACOS: 'TACOS',
 };
+
+const REVENUE_COLUMN_OPTIONS = [
+  { id: 'asin', label: 'ASIN' },
+  { id: 'productName', label: 'Product Name' },
+  { id: 'productCategory', label: 'Product Category' },
+  { id: 'packSize', label: 'Pack Size' },
+  { id: 'salesChannel', label: 'Sales Channel' },
+  { id: 'reportMonth', label: 'Report Month' },
+  { id: 'overallUnit', label: 'Overall Units' },
+  { id: 'overallRevenue', label: 'Overall Revenue' },
+  { id: 'adUnit', label: 'Ad Units' },
+  { id: 'adRevenue', label: 'Ad Revenue' },
+  { id: 'organicUnit', label: 'Organic Units' },
+  { id: 'organicRevenue', label: 'Organic Revenue' },
+  { id: 'newToBrandUnit', label: 'New to Brand' },
+  { id: 'repeatUnit', label: 'Repeat' },
+  { id: 'promotionalUnit', label: 'Promo' },
+  { id: 'aov', label: 'AOV' },
+  { id: 'tacos', label: 'TACOS %' },
+];
+
+const REVENUE_COLUMN_ORDER_STORAGE_KEY = 'pattex.revenue.columnOrder.v1';
+const REVENUE_VISIBLE_COLUMNS_STORAGE_KEY = 'pattex.revenue.visibleColumns.v1';
 
 /* Fallback when comparison not yet loaded */
 const KPI_TRENDS_FALLBACK = {
@@ -149,6 +172,40 @@ const parseYearMonth = (value) => {
   return new Date(y, m - 1, 1);
 };
 
+function getRowProductCategory(row) {
+  if (!row) return '';
+  return (
+    row.product_category ??
+    row.productCategory ??
+    row.productSubCategory ??
+    row.product_sub_category ??
+    row.category ??
+    row['Product Category'] ??
+    row['Product Sub Category'] ??
+    ''
+  );
+}
+
+function getRowPackSize(row) {
+  if (!row) return '';
+  const v =
+    row.pack_size ??
+    row.packSize ??
+    row.Pack_Size ??
+    row['Pack Size'] ??
+    row['Pack_Size'] ??
+    row['Pack size'] ??
+    '';
+  return v != null ? String(v) : '';
+}
+
+function truncateText(value, maxChars) {
+  const s = value == null ? '' : String(value);
+  if (!maxChars || maxChars <= 0) return s;
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}...`;
+}
+
 export default function Revenue() {
   const [revenueRows, setRevenueRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -158,6 +215,7 @@ export default function Revenue() {
     asin: '',
     productName: '',
     category: '',
+    packSize: '',
     channel: 'Seller Central',
   });
   const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
@@ -169,6 +227,62 @@ export default function Revenue() {
   const [tempRange, setTempRange] = useState({ start: null, end: null });
   const [metricModal, setMetricModal] = useState(null);
   const [detailedView, setDetailedView] = useState('all'); // 'all' | 'best_units' | 'worst_units' | 'best_revenue' | 'worst_revenue'
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    const defaults = {
+      asin: true,
+      productName: true,
+      productCategory: true,
+      packSize: true,
+      salesChannel: true,
+      reportMonth: true,
+      overallUnit: true,
+      overallRevenue: true,
+      adUnit: true,
+      adRevenue: true,
+      organicUnit: true,
+      organicRevenue: true,
+      newToBrandUnit: true,
+      repeatUnit: true,
+      promotionalUnit: true,
+      aov: true,
+      tacos: true,
+    };
+    try {
+      const raw = localStorage.getItem(REVENUE_VISIBLE_COLUMNS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const next = { ...defaults };
+        Object.keys(next).forEach((k) => {
+          if (typeof parsed[k] === 'boolean') next[k] = parsed[k];
+        });
+        return next;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return defaults;
+  });
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const columnPickerWrapRef = useRef(null);
+  const selectAllColumnsRef = useRef(null);
+  const [columnOrder, setColumnOrder] = useState(() => {
+    try {
+      const raw = localStorage.getItem(REVENUE_COLUMN_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+        const known = REVENUE_COLUMN_OPTIONS.map((c) => c.id);
+        const base = parsed.filter((id) => known.includes(id));
+        known.forEach((id) => {
+          if (!base.includes(id)) base.push(id);
+        });
+        return base;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return REVENUE_COLUMN_OPTIONS.map((c) => c.id);
+  });
+  const dragColumnIdRef = useRef(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [comparison, setComparison] = useState(null);
@@ -239,13 +353,13 @@ export default function Revenue() {
 
   // Cascading options: Category -> Product Name -> ASIN
   const categoryOptions = useMemo(
-    () => Array.from(new Set(revenueRows.map((r) => r.productCategory).filter(Boolean))),
+    () => Array.from(new Set(revenueRows.map(getRowProductCategory).filter(Boolean))),
     [revenueRows],
   );
 
   const rowsForProductNames = useMemo(
     () => (filters.category
-      ? revenueRows.filter((r) => r.productCategory === filters.category)
+      ? revenueRows.filter((r) => getRowProductCategory(r) === filters.category)
       : revenueRows),
     [revenueRows, filters.category],
   );
@@ -264,6 +378,11 @@ export default function Revenue() {
     () => Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean))),
     [rowsForAsins],
   );
+
+  const packSizeOptions = useMemo(() => {
+    const base = rowsForProductNames;
+    return Array.from(new Set(base.map(getRowPackSize).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  }, [rowsForProductNames]);
   const channelOptions = useMemo(() => {
     if (allSalesChannels.length > 0) return allSalesChannels;
     const raw = Array.from(
@@ -302,7 +421,7 @@ export default function Revenue() {
         const searchable = [
           row.asin,
           row.productName,
-          row.productCategory,
+          getRowProductCategory(row),
           row.salesChannel,
         ]
           .filter(Boolean)
@@ -312,7 +431,8 @@ export default function Revenue() {
     }
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
-    if (filters.category && row.productCategory !== filters.category) return false;
+    if (filters.category && getRowProductCategory(row) !== filters.category) return false;
+    if (filters.packSize && getRowPackSize(row) !== filters.packSize) return false;
     if (filters.channel) {
       const selected = String(filters.channel || '').trim().toLowerCase();
       const rowVal = String(row.salesChannel || row.channel || '').trim().toLowerCase();
@@ -474,8 +594,107 @@ export default function Revenue() {
     };
   }, [localComparison, comparison]);
 
+  const toggleColumn = (id) => {
+    setVisibleColumns((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const columnDefsById = useMemo(() => {
+    const defs = {};
+    REVENUE_COLUMN_OPTIONS.forEach((c) => { defs[c.id] = c; });
+    return defs;
+  }, []);
+
+  const visibleOrderedColumnIds = useMemo(() => {
+    const known = new Set(REVENUE_COLUMN_OPTIONS.map((c) => c.id));
+    const orderedKnown = columnOrder.filter((id) => known.has(id));
+    const missing = REVENUE_COLUMN_OPTIONS.map((c) => c.id).filter((id) => !orderedKnown.includes(id));
+    return [...orderedKnown, ...missing];
+  }, [columnOrder]);
+
+  const allColumnsSelected = useMemo(
+    () => REVENUE_COLUMN_OPTIONS.every((c) => !!visibleColumns[c.id]),
+    [visibleColumns],
+  );
+  const someColumnsSelected = useMemo(
+    () => REVENUE_COLUMN_OPTIONS.some((c) => !!visibleColumns[c.id]),
+    [visibleColumns],
+  );
+
+  useEffect(() => {
+    if (!selectAllColumnsRef.current) return;
+    selectAllColumnsRef.current.indeterminate = someColumnsSelected && !allColumnsSelected;
+  }, [someColumnsSelected, allColumnsSelected]);
+
+  const toggleAllColumns = () => {
+    setVisibleColumns((prev) => {
+      const shouldEnableAll = !REVENUE_COLUMN_OPTIONS.every((c) => !!prev[c.id]);
+      const next = { ...prev };
+      REVENUE_COLUMN_OPTIONS.forEach((c) => {
+        next[c.id] = shouldEnableAll;
+      });
+      return next;
+    });
+  };
+
+  const onColumnDragStart = (id) => {
+    dragColumnIdRef.current = id;
+  };
+
+  const onColumnDrop = (targetId) => {
+    const sourceId = dragColumnIdRef.current;
+    dragColumnIdRef.current = null;
+    if (!sourceId || sourceId === targetId) return;
+    setColumnOrder((prev) => {
+      const known = REVENUE_COLUMN_OPTIONS.map((c) => c.id);
+      const base = [...new Set([...(Array.isArray(prev) ? prev : []).filter((id) => known.includes(id)), ...known])];
+      const from = base.indexOf(sourceId);
+      const to = base.indexOf(targetId);
+      if (from === -1 || to === -1) return base;
+      base.splice(from, 1);
+      base.splice(to, 0, sourceId);
+      return base;
+    });
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REVENUE_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(columnOrder));
+    } catch {
+      // ignore storage errors
+    }
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REVENUE_VISIBLE_COLUMNS_STORAGE_KEY, JSON.stringify(visibleColumns));
+    } catch {
+      // ignore storage errors
+    }
+  }, [visibleColumns]);
+
+  useEffect(() => {
+    if (!showColumnPicker) return;
+    const onPointerDown = (e) => {
+      const el = columnPickerWrapRef.current;
+      if (!el) return;
+      if (el.contains(e.target)) return;
+      setShowColumnPicker(false);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setShowColumnPicker(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showColumnPicker]);
+
   const clearAllFilters = () => {
-    setFilters({ search: '', asin: '', productName: '', category: '', channel: 'Seller Central' });
+    setFilters({ search: '', asin: '', productName: '', category: '', packSize: '', channel: 'Seller Central' });
     setDateFilterType('');
     setCustomRangeStart('');
     setCustomRangeEnd('');
@@ -490,6 +709,7 @@ export default function Revenue() {
     filters.asin ||
     filters.productName ||
     filters.category ||
+    filters.packSize ||
     filters.channel !== '';
 
   /* Only show clear when user has changed something from default (e.g. not just "Current Month" with no filters) */
@@ -501,6 +721,7 @@ export default function Revenue() {
     filters.asin ||
     filters.productName ||
     filters.category ||
+    filters.packSize ||
     filters.channel !== '';
 
   const openMonthRangeDialog = () => {
@@ -614,15 +835,15 @@ export default function Revenue() {
 
     switch (metricModal) {
       case METRIC_IDS.OVERALL:
-        title = 'Overall Unit / Revenue – Breakdown';
+        title = 'Overall Revenue / Unit – Breakdown';
         columns = ['ASIN', 'Product Name', 'Channel', 'Units', 'Revenue'];
         break;
       case METRIC_IDS.AD:
-        title = 'Ad Unit / Revenue – Breakdown';
+        title = 'Ad Revenue / Unit – Breakdown';
         columns = ['ASIN', 'Product Name', 'Channel', 'Ad Units', 'Ad Revenue'];
         break;
       case METRIC_IDS.ORGANIC:
-        title = 'Organic Unit / Revenue – Breakdown';
+        title = 'Organic Revenue / Unit – Breakdown';
         columns = ['ASIN', 'Product Name', 'Channel', 'Organic Units', 'Organic Revenue'];
         break;
       case METRIC_IDS.NEW_TO_BRAND:
@@ -751,6 +972,7 @@ export default function Revenue() {
       // Reset children whenever parent changes
       productName: '',
       asin: '',
+      packSize: '',
     }));
   };
 
@@ -761,6 +983,7 @@ export default function Revenue() {
       productName: value,
       // Reset child when parent (product name) changes
       asin: '',
+      packSize: '',
     }));
   };
 
@@ -768,7 +991,7 @@ export default function Revenue() {
     const value = e.target.value;
     if (!value) {
       // When ASIN is cleared manually, keep parent selections
-      setFilters((prev) => ({ ...prev, asin: '' }));
+      setFilters((prev) => ({ ...prev, asin: '', packSize: '' }));
       return;
     }
 
@@ -778,7 +1001,8 @@ export default function Revenue() {
       ...prev,
       asin: value,
       productName: match?.productName || prev.productName,
-      category: match?.productCategory || prev.category,
+      category: getRowProductCategory(match) || prev.category,
+      packSize: getRowPackSize(match) || prev.packSize,
     }));
   };
 
@@ -828,6 +1052,27 @@ export default function Revenue() {
           background: var(--card-bg, #fff);
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
         }
+
+        /* Revenue table: keep Product Name in one line */
+        .revenue-col-product-name {
+          min-width: 260px;
+          width: 260px;
+        }
+
+        .revenue-col-product-name .cell-product {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        /* Revenue table: keep Sales Channel in one line */
+        .revenue-col-sales-channel {
+          min-width: 160px;
+          width: 160px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
       `}</style>
       <div className="card revenue-filters-card">
         <div className="filter-row filter-row-one">
@@ -875,6 +1120,21 @@ export default function Revenue() {
               {categoryOptions.map((cat) => (
                 <option key={cat} value={cat}>
                   {cat}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="filter-group">
+            <select
+              value={filters.packSize}
+              onChange={(e) => setFilters((f) => ({ ...f, packSize: e.target.value }))}
+              disabled={!packSizeOptions.length}
+              aria-label="Pack Size"
+            >
+              <option value="">{filters.packSize ? 'Select All' : 'Pack Size'}</option>
+              {packSizeOptions.map((ps) => (
+                <option key={ps} value={ps}>
+                  {ps}
                 </option>
               ))}
             </select>
@@ -954,7 +1214,7 @@ export default function Revenue() {
             className="kpi-item kpi-clickable kpi-blue"
             onClick={() => openMetricModal(METRIC_IDS.OVERALL)}
           >
-            <div className="label">Overall Unit / Revenue</div>
+            <div className="label">Overall Revenue / Unit</div>
             <div className="value value-primary">
               AED {Math.round(summary.overallRevenue).toLocaleString()}
               <span
@@ -971,7 +1231,7 @@ export default function Revenue() {
             className="kpi-item kpi-clickable kpi-violet"
             onClick={() => openMetricModal(METRIC_IDS.AD)}
           >
-            <div className="label">Ad Unit / Revenue</div>
+            <div className="label">Ad Revenue / Unit</div>
             <div className="value value-primary">
               AED {Math.round(summary.adRevenue).toLocaleString()}
               <span
@@ -988,7 +1248,7 @@ export default function Revenue() {
             className="kpi-item kpi-clickable kpi-green"
             onClick={() => openMetricModal(METRIC_IDS.ORGANIC)}
           >
-            <div className="label">Organic Unit / Revenue</div>
+            <div className="label">Organic Revenue / Unit</div>
             <div className="value value-primary">
               AED {Math.round(summary.organicRevenue).toLocaleString()}
               <span
@@ -1071,28 +1331,90 @@ export default function Revenue() {
           >
             Top 10 Worst Performers – Revenue
           </button>
+          <div className="column-picker-wrap" ref={columnPickerWrapRef}>
+            <button
+              type="button"
+              className="btn-chip"
+              onClick={() => setShowColumnPicker((v) => !v)}
+            >
+              Other Columns
+            </button>
+            {showColumnPicker && (
+              <div className="column-picker">
+                <label key="__select_all__" className="column-picker-item">
+                  <input
+                    ref={selectAllColumnsRef}
+                    type="checkbox"
+                    checked={allColumnsSelected}
+                    onChange={toggleAllColumns}
+                  />
+                  Select all
+                </label>
+                <div style={{ margin: '6px 0 10px', fontSize: 12, opacity: 0.8 }}>
+                  Drag a row to reorder columns.
+                </div>
+                {visibleOrderedColumnIds.map((id) => {
+                  const col = columnDefsById[id];
+                  if (!col) return null;
+                  return (
+                    <label
+                      key={col.id}
+                      className="column-picker-item"
+                      draggable
+                      onDragStart={() => onColumnDragStart(col.id)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => onColumnDrop(col.id)}
+                      style={{ cursor: 'grab' }}
+                      title="Drag to reorder"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!visibleColumns[col.id]}
+                        onChange={() => toggleColumn(col.id)}
+                      />
+                      {col.label}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         <div className="table-wrap revenue-table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>ASIN</th>
-                <th>Product Name</th>
-                <th>Product Category</th>
-                <th>Pack Size</th>
-                <th>Sales Channel</th>
-                <th>Report Month</th>
-                <th className="col-num">Overall Units</th>
-                <th className="col-num">Overall Revenue</th>
-                <th className="col-num">Ad Units</th>
-                <th className="col-num">Ad Revenue</th>
-                <th className="col-num">Organic Units</th>
-                <th className="col-num">Organic Revenue</th>
-                <th className="col-num">New to Brand</th>
-                <th className="col-num">Repeat</th>
-                <th className="col-num">Promo</th>
-                <th className="col-num">AOV</th>
-                <th className="col-num">TACOS %</th>
+                {visibleOrderedColumnIds.map((id) => {
+                  if (!visibleColumns[id]) return null;
+                  const col = columnDefsById[id];
+                  if (!col) return null;
+                  const numCols = new Set([
+                    'overallUnit',
+                    'overallRevenue',
+                    'adUnit',
+                    'adRevenue',
+                    'organicUnit',
+                    'organicRevenue',
+                    'newToBrandUnit',
+                    'repeatUnit',
+                    'promotionalUnit',
+                    'aov',
+                    'tacos',
+                  ]);
+                  const cls =
+                    id === 'productName'
+                      ? 'revenue-col-product-name'
+                      : id === 'salesChannel'
+                        ? 'revenue-col-sales-channel'
+                        : numCols.has(id)
+                          ? 'col-num'
+                          : '';
+                  return (
+                    <th key={id} className={cls}>
+                      {col.label}
+                    </th>
+                  );
+                })}
                 <th className="cell-actions" aria-label="Actions" />
               </tr>
             </thead>
@@ -1105,28 +1427,45 @@ export default function Revenue() {
 
                 return (
                   <tr key={row.id}>
-                    <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
-                    <td>
-                      <div className="cell-product">
-                        <div className="table-thumb" aria-hidden>—</div>
-                        <div>{row.productName ?? '—'}</div>
-                      </div>
-                    </td>
-                    <td>{row.productCategory ?? '—'}</td>
-                    <td>{row.packSize ?? '—'}</td>
-                    <td>{row.salesChannel ?? '—'}</td>
-                    <td>{row.reportMonth ? formatDateDDMonYY(row.reportMonth) : '—'}</td>
-                    <td className="col-num">{Number(row.overallUnit) || 0}</td>
-                    <td className="col-num">AED {Math.round(overallRevenue).toLocaleString()}</td>
-                    <td className="col-num">{Number(row.adUnit) || 0}</td>
-                    <td className="col-num">AED {Math.round(adRevenue).toLocaleString()}</td>
-                    <td className="col-num">{Number(row.organicUnit) || 0}</td>
-                    <td className="col-num">AED {Math.round(organicRevenue).toLocaleString()}</td>
-                    <td className="col-num">{Number(row.newToBrandUnit) || 0}</td>
-                    <td className="col-num">{Number(row.repeatUnit) || 0}</td>
-                    <td className="col-num">{Number(row.promotionalUnit) || 0}</td>
-                    <td className="col-num">{(Number(row.aov) || 0).toFixed(2)}</td>
-                    <td className="col-num">{tacosPct.toFixed(1)}%</td>
+                    {visibleOrderedColumnIds.map((id) => {
+                      if (!visibleColumns[id]) return null;
+                      if (id === 'asin') {
+                        return <td key={id}><span className="text-secondary">{row.asin ?? '—'}</span></td>;
+                      }
+                      if (id === 'productName') {
+                        return (
+                          <td key={id} className="revenue-col-product-name">
+                            <div className="cell-product">
+                              <div title={row.productName ?? ''}>
+                                {row.productName ? truncateText(row.productName, 30) : '—'}
+                              </div>
+                            </div>
+                          </td>
+                        );
+                      }
+                      if (id === 'productCategory') return <td key={id}>{getRowProductCategory(row) || '—'}</td>;
+                      if (id === 'packSize') return <td key={id}>{getRowPackSize(row) || '—'}</td>;
+                      if (id === 'salesChannel') {
+                        return (
+                          <td key={id} className="revenue-col-sales-channel" title={row.salesChannel ?? ''}>
+                            {row.salesChannel ?? '—'}
+                          </td>
+                        );
+                      }
+                      if (id === 'reportMonth') return <td key={id}>{row.reportMonth ? formatDateDDMonYY(row.reportMonth) : '—'}</td>;
+                      if (id === 'overallUnit') return <td key={id} className="col-num">{Number(row.overallUnit) || 0}</td>;
+                      if (id === 'overallRevenue') return <td key={id} className="col-num">AED {Math.round(overallRevenue).toLocaleString()}</td>;
+                      if (id === 'adUnit') return <td key={id} className="col-num">{Number(row.adUnit) || 0}</td>;
+                      if (id === 'adRevenue') return <td key={id} className="col-num">AED {Math.round(adRevenue).toLocaleString()}</td>;
+                      if (id === 'organicUnit') return <td key={id} className="col-num">{Number(row.organicUnit) || 0}</td>;
+                      if (id === 'organicRevenue') return <td key={id} className="col-num">AED {Math.round(organicRevenue).toLocaleString()}</td>;
+                      if (id === 'newToBrandUnit') return <td key={id} className="col-num">{Number(row.newToBrandUnit) || 0}</td>;
+                      if (id === 'repeatUnit') return <td key={id} className="col-num">{Number(row.repeatUnit) || 0}</td>;
+                      if (id === 'promotionalUnit') return <td key={id} className="col-num">{Number(row.promotionalUnit) || 0}</td>;
+                      if (id === 'aov') return <td key={id} className="col-num">{(Number(row.aov) || 0).toFixed(2)}</td>;
+                      if (id === 'tacos') return <td key={id} className="col-num">{tacosPct.toFixed(1)}%</td>;
+                      return null;
+                    })}
                     <td className="cell-actions">
                       <button
                         type="button"
