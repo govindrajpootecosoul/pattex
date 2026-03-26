@@ -29,6 +29,11 @@ const userSchema = new mongoose.Schema(
   { timestamps: true, collection: USERS_COLLECTION }
 );
 
+// Critical indexes for auth & admin dashboards.
+// NOTE: `email` already has an index created automatically by `unique: true`.
+userSchema.index({ createdAt: -1 });
+userSchema.index({ status: 1, role: 1 });
+
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 10);

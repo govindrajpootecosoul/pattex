@@ -2,9 +2,14 @@ import { useState, useMemo, useEffect } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
+import { useSalesChannels } from '../../hooks/useSalesChannels';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
+  { id: 'CURRENT_DAY', label: 'Current Day' },
+  { id: 'PREVIOUS_DAY', label: 'Previous Day' },
+  { id: 'CURRENT_WEEK', label: 'Current Week' },
+  { id: 'PREVIOUS_WEEK', label: 'Previous Week' },
   { id: 'CURRENT_MONTH', label: 'Current Month' },
   { id: 'PREVIOUS_MONTH', label: 'Previous Month' },
   { id: 'CURRENT_YEAR', label: 'Current Year' },
@@ -33,10 +38,22 @@ const KPI_TRENDS_FALLBACK = {
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const getDateRangeForFilter = (dateFilterType, customStart, customEnd) => {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
+const getAnchorDateForPeriods = (latestUpdatedAtByChannel, updatedAt) => {
+  // Match other screens: when a Sales Channel is selected, anchor periods to the
+  // latest available data date for that channel (not the real current date).
+  const raw = latestUpdatedAtByChannel || updatedAt || '';
+  const d = raw ? new Date(raw) : new Date();
+  if (Number.isNaN(d.getTime())) return new Date();
+  d.setHours(0, 0, 0, 0);
+  // Apply the same "data lag" window used across dashboards.
+  d.setDate(d.getDate() - 3);
+  return d;
+};
+
+const getDateRangeForFilter = (dateFilterType, customStart, customEnd, anchorDate) => {
+  const base = anchorDate instanceof Date ? anchorDate : new Date();
+  const y = base.getFullYear();
+  const m = base.getMonth();
   if (!dateFilterType) return null;
   if (dateFilterType === 'CUSTOM_RANGE' && customStart) {
     const start = customEnd && customEnd < customStart ? customEnd : customStart;
@@ -63,12 +80,10 @@ const getDateRangeForFilter = (dateFilterType, customStart, customEnd) => {
 };
 
 /** Current vs comparison period month lists (mirrors backend; T-3 for "current"). */
-function getPeriodMonths(dateFilterType, customStart, customEnd) {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  now.setDate(now.getDate() - 3);
-  const y = now.getFullYear();
-  const m = now.getMonth();
+function getPeriodMonths(dateFilterType, customStart, customEnd, anchorDate) {
+  const base = anchorDate instanceof Date ? anchorDate : new Date();
+  const y = base.getFullYear();
+  const m = base.getMonth();
   function monthList(startY, startM, count) {
     const list = [];
     const d = new Date(startY, startM, 1);
@@ -143,7 +158,7 @@ export default function Revenue() {
     asin: '',
     productName: '',
     category: '',
-    channel: '',
+    channel: 'Seller Central',
   });
   const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
   const [customRangeStart, setCustomRangeStart] = useState('');
@@ -159,6 +174,11 @@ export default function Revenue() {
   const [comparison, setComparison] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
+  const allSalesChannels = useSalesChannels();
+  const anchorDate = useMemo(
+    () => getAnchorDateForPeriods(latestUpdatedAtByChannel, updatedAt),
+    [latestUpdatedAtByChannel, updatedAt],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -168,6 +188,7 @@ export default function Revenue() {
     if (dateFilterType) params.dateFilterType = dateFilterType;
     if (customRangeStart) params.customRangeStart = customRangeStart;
     if (customRangeEnd) params.customRangeEnd = customRangeEnd;
+    if (filters.channel) params.salesChannel = String(filters.channel).trim();
     dashboardApi
       .getRevenue(params)
       .then((data) => {
@@ -185,7 +206,20 @@ export default function Revenue() {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dateFilterType, customRangeStart, customRangeEnd]);
+  }, [dateFilterType, customRangeStart, customRangeEnd, filters.channel]);
+
+  // Vendor Central data is often provided as day-level snapshots (not fully populated for month-to-date).
+  // When VC is selected, default to Current Day so users see the latest available data immediately.
+  useEffect(() => {
+    const ch = String(filters.channel || '').trim().toLowerCase();
+    if (!ch) return;
+    if (ch.includes('vendor central') && dateFilterType === 'CURRENT_MONTH') {
+      setDateFilterType('CURRENT_DAY');
+      setShowCustomRangePicker(false);
+      setCustomRangeStart('');
+      setCustomRangeEnd('');
+    }
+  }, [filters.channel]); // intentionally not depending on dateFilterType to avoid toggling loops
 
   useEffect(() => {
     let cancelled = false;
@@ -231,6 +265,7 @@ export default function Revenue() {
     [rowsForAsins],
   );
   const channelOptions = useMemo(() => {
+    if (allSalesChannels.length > 0) return allSalesChannels;
     const raw = Array.from(
       new Set(
         revenueRows
@@ -241,7 +276,24 @@ export default function Revenue() {
       ),
     );
     return raw.sort((a, b) => String(a).localeCompare(String(b)));
-  }, [revenueRows]);
+  }, [allSalesChannels, revenueRows]);
+
+  // Ensure the selected channel matches an available option.
+  // This prevents an initial load with a channel value that isn't recognized by the backend.
+  useEffect(() => {
+    if (!channelOptions || channelOptions.length === 0) return;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const current = normalize(filters.channel);
+    const optionsNormalized = channelOptions.map((c) => ({ raw: c, key: normalize(c) }));
+    const hasExact = current && optionsNormalized.some((o) => o.key === current);
+    if (hasExact) return;
+    const preferred = optionsNormalized.find((o) => o.key === 'seller central');
+    const next = (preferred?.raw || optionsNormalized[0]?.raw || '').toString();
+    if (next && next !== filters.channel) {
+      setFilters((f) => ({ ...f, channel: next }));
+      setPage(1);
+    }
+  }, [channelOptions]);
 
   const applyNonDateFilters = (row) => {
     if (filters.search) {
@@ -261,13 +313,17 @@ export default function Revenue() {
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && row.productCategory !== filters.category) return false;
-    if (filters.channel && (row.salesChannel || row.channel) !== filters.channel) return false;
+    if (filters.channel) {
+      const selected = String(filters.channel || '').trim().toLowerCase();
+      const rowVal = String(row.salesChannel || row.channel || '').trim().toLowerCase();
+      if (selected && rowVal !== selected) return false;
+    }
     return true;
   };
 
   const applyFilters = (row) => {
     if (!applyNonDateFilters(row)) return false;
-    const dateRange = getDateRangeForFilter(dateFilterType, customRangeStart, customRangeEnd);
+    const dateRange = getDateRangeForFilter(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
     if (!dateRange || !row.reportMonth) return true;
     return row.reportMonth >= dateRange.start && row.reportMonth <= dateRange.end;
   };
@@ -363,7 +419,7 @@ export default function Revenue() {
 
   /** Comparison that respects date period + all filters (current vs previous period). */
   const localComparison = useMemo(() => {
-    const periods = getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd);
+    const periods = getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
     if (!periods || !revenueRows.length) return null;
     const currentSet = new Set(periods.current);
     const comparisonSet = new Set(periods.comparison);
@@ -397,7 +453,7 @@ export default function Revenue() {
       tacos: { pctChange: fmt(pctChange(curr.tacos, prev.tacos)) },
       adSpend: { pctChange: fmt(pctChange(curr.adSpend, prev.adSpend)) },
     };
-  }, [dateFilterType, customRangeStart, customRangeEnd, revenueRows, filters.search, filters.asin, filters.productName, filters.category, filters.channel]);
+  }, [dateFilterType, customRangeStart, customRangeEnd, revenueRows, filters.search, filters.asin, filters.productName, filters.category, filters.channel, anchorDate]);
 
   const kpiTrends = useMemo(() => {
     const source = localComparison || comparison;
@@ -419,7 +475,7 @@ export default function Revenue() {
   }, [localComparison, comparison]);
 
   const clearAllFilters = () => {
-    setFilters({ search: '', asin: '', productName: '', category: '', channel: '' });
+    setFilters({ search: '', asin: '', productName: '', category: '', channel: 'Seller Central' });
     setDateFilterType('');
     setCustomRangeStart('');
     setCustomRangeEnd('');
@@ -598,7 +654,7 @@ export default function Revenue() {
               Close
             </button>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap revenue-table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
@@ -752,6 +808,27 @@ export default function Revenue() {
 
   return (
     <>
+      <style>{`
+        /* Revenue-only: keep table headers visible while scrolling rows */
+        .table-wrap.revenue-table-wrap {
+          position: relative;
+          max-height: 65vh;
+          overflow: auto;
+        }
+
+        .table-wrap.revenue-table-wrap table {
+          border-collapse: separate;
+          border-spacing: 0;
+        }
+
+        .table-wrap.revenue-table-wrap thead th {
+          position: sticky;
+          top: 0;
+          z-index: 5;
+          background: var(--card-bg, #fff);
+          box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+      `}</style>
       <div className="card revenue-filters-card">
         <div className="filter-row filter-row-one">
           <div className="filter-group">
@@ -806,8 +883,8 @@ export default function Revenue() {
             <select
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
+              aria-label="Sales Channel"
             >
-              <option value="">Select All</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -995,7 +1072,7 @@ export default function Revenue() {
             Top 10 Worst Performers – Revenue
           </button>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap revenue-table-wrap">
           <table className="data-table">
             <thead>
               <tr>

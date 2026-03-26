@@ -1,3 +1,5 @@
+import { queryClient } from '../queryClient.js';
+
 function normalizeBaseUrl(raw) {
   if (!raw) return '';
   // Remove trailing slashes so we can safely do `${base}${path}`
@@ -22,23 +24,49 @@ function isNetworkError(err) {
 
 async function request(path, options = {}) {
   const token = localStorage.getItem('pattex_token');
+  const method = String(options.method || 'GET').toUpperCase();
   const headers = {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` }),
     ...options.headers,
   };
-  let res;
-  try {
-    res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  } catch (err) {
-    if (isNetworkError(err)) {
-      throw new Error('Cannot reach server. Start the backend with: cd backend && npm run dev');
+
+  const doFetch = async () => {
+    let res;
+    try {
+      res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    } catch (err) {
+      if (isNetworkError(err)) {
+        throw new Error('Cannot reach server. Start the backend with: cd backend && npm run dev');
+      }
+      throw err;
     }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || res.statusText || 'Request failed');
+    return data;
+  };
+
+  // Cache/dedupe only GET requests. Server-side caching handles heavy aggregation,
+  // while React Query avoids duplicate client requests between renders.
+  if (method === 'GET') {
+    const queryKey = ['api:GET', path, token || ''];
+    return queryClient.fetchQuery({
+      queryKey,
+      queryFn: doFetch,
+      staleTime: 5 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
+      refetchOnWindowFocus: false,
+      retry: 0,
+    });
+  }
+
+  // Non-GET requests are never cached.
+  try {
+    return await doFetch();
+  } catch (err) {
     throw err;
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || res.statusText || 'Request failed');
-  return data;
 }
 
 export const authApi = {
@@ -50,6 +78,7 @@ export const authApi = {
 };
 
 export const dashboardApi = {
+  getSalesChannels: () => request('/dashboard/sales-channels'),
   getExecutiveSummary: (params) => {
     const q = new URLSearchParams();
     if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
@@ -84,6 +113,7 @@ export const dashboardApi = {
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
     if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
     if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
     const query = q.toString();
     return request(`/dashboard/inventory${query ? `?${query}` : ''}`);
   },
@@ -92,6 +122,7 @@ export const dashboardApi = {
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
     if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
     if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
     const query = q.toString();
     return request(`/dashboard/buybox${query ? `?${query}` : ''}`);
   },

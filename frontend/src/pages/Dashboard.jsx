@@ -17,14 +17,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const capitalizeFirst = (value) => {
-    const s = String(value ?? '').trim();
-    if (!s) return '';
-    return s[0].toUpperCase() + s.slice(1);
-  };
-  const companyName = capitalizeFirst(user?.databaseName);
-  const appName = capitalizeFirst(import.meta.env.VITE_APP_NAME || 'Dashboard');
-  const headerName = companyName ? `${companyName} Dashboard` : appName;
+  const headerName = user?.databaseName || import.meta.env.VITE_APP_NAME || 'Dashboard';
 
   const handleLogout = () => {
     logout();
@@ -63,3 +56,4 @@ export default function Dashboard() {
     </div>
   );
 }
+ 

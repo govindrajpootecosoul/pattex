@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
+import { useSalesChannels } from '../../hooks/useSalesChannels';
 
 export default function ExecutiveSummary() {
   const [data, setData] = useState(null);
@@ -15,7 +16,8 @@ export default function ExecutiveSummary() {
   const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('declining');
   const [dateFilterType, setDateFilterType] = useState('CURRENT_DAY'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
   const [periodLabels, setPeriodLabels] = useState({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
-  const [salesChannelFilter, setSalesChannelFilter] = useState('');
+  const [salesChannelFilter, setSalesChannelFilter] = useState('Seller Central');
+  const allSalesChannels = useSalesChannels();
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -70,9 +72,7 @@ export default function ExecutiveSummary() {
     let cancelled = false;
     setKpiLoading(true);
     dashboardApi
-      // For now, KPI table should remain identical across VC/SC filters.
-      // So we intentionally do NOT pass salesChannel here.
-      .getKeyPerformanceMetrics()
+      .getKeyPerformanceMetrics({ salesChannel: salesChannelFilter || '' })
       .then((resp) => {
         if (cancelled) return;
         setKpiData(resp || null);
@@ -85,7 +85,7 @@ export default function ExecutiveSummary() {
         if (!cancelled) setKpiLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [salesChannelFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +145,7 @@ export default function ExecutiveSummary() {
   };
 
   const salesChannelOptions = useMemo(() => {
+    if (allSalesChannels.length > 0) return allSalesChannels;
     const collect = (rows) =>
       (Array.isArray(rows) ? rows : [])
         .map((r) => pickSalesChannel(r))
@@ -164,7 +165,23 @@ export default function ExecutiveSummary() {
       if (!seen.has(key)) seen.set(key, v);
     });
     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
-  }, [revenueRows, prevRevenueRows, data?.poSummary]);
+  }, [allSalesChannels, revenueRows, prevRevenueRows, data?.poSummary]);
+
+  // Ensure the selected channel matches an available option on first render/load.
+  useEffect(() => {
+    if (!salesChannelOptions || salesChannelOptions.length === 0) return;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const current = normalize(salesChannelFilter);
+    const optionsNormalized = salesChannelOptions.map((c) => ({ raw: c, key: normalize(c) }));
+    const hasExact = current && optionsNormalized.some((o) => o.key === current);
+    if (hasExact) return;
+    const preferred = optionsNormalized.find((o) => o.key === 'seller central');
+    const next = (preferred?.raw || optionsNormalized[0]?.raw || '').toString();
+    if (next && next !== salesChannelFilter) {
+      setSalesChannelFilter(next);
+      setPage(1);
+    }
+  }, [salesChannelOptions]);
 
   const tableRows = useMemo(() => {
     const currentRows = Array.isArray(revenueRows) ? revenueRows : [];
@@ -390,7 +407,6 @@ export default function ExecutiveSummary() {
             aria-label="Sales Channel"
             style={{ marginRight: 10 }}
           >
-            <option value="">Sales Channel (All)</option>
             {salesChannelOptions.map((ch) => (
               <option key={ch} value={ch}>
                 {ch}
@@ -430,7 +446,7 @@ export default function ExecutiveSummary() {
         <div className="exec-kpi-main">
           <div className="exec-metrics-main">
             <div className="exec-po-card">
-              <div className="exec-po-header">Key Performance Metrics (Current month)</div>
+              <div className="exec-po-header">Key Performance Metrics (Current month) {salesChannelFilter ? `– ${salesChannelFilter}` : ''}</div>
               <div className="table-wrap exec-table">
                 <table className="data-table exec-po-table">
                   <thead>

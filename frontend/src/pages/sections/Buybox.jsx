@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
+import { useSalesChannels } from '../../hooks/useSalesChannels';
 
 const STOCK_FILTERS = [
   { id: 'NO_BUYBOX', label: 'ASINs with no Buybox' },
@@ -20,6 +21,65 @@ const normalizeReportDate = (value) => {
 
 const normalizeOwner = (owner) => (owner != null ? String(owner).trim().toLowerCase() : '');
 const isAmazonAeOwner = (owner) => normalizeOwner(owner).includes('amazon.ae');
+
+const BUYBOX_COLUMN_OPTIONS = [
+  { id: 'brand', label: 'Brand' },
+  { id: 'asin', label: 'ASIN' },
+  { id: 'productName', label: 'Product Name' },
+  { id: 'productCategory', label: 'Product Category' },
+  { id: 'packType', label: 'Pack Type' },
+  { id: 'packSize', label: 'Pack Size' },
+  { id: 'totalSales', label: 'Last 30 Days Sales' },
+  { id: 'vcAvailableInventory', label: 'VC Available Inventory' },
+  { id: 'scAvailableInventory', label: 'SC Available Inventory' },
+  { id: 'openPOs', label: 'Open POs' },
+  { id: 'dos', label: 'DOS' },
+  { id: 'scIdealPrice', label: 'SC Ideal Price' },
+  { id: 'vcIdealPrice', label: 'VC Ideal Price' },
+  { id: 'currentOwner', label: 'Current Owner' },
+  { id: 'currentOwnerPrice', label: 'Current Owner Price' },
+  { id: 'hijacker1', label: 'Hijacker 1' },
+  { id: 'hijacker1Price', label: 'Hijacker 1 Price' },
+  { id: 'hijacker1MOQ', label: 'Hijacker 1 MOQ' },
+  { id: 'hijacker2', label: 'Hijacker 2' },
+  { id: 'hijacker2Price', label: 'Hijacker 2 Price' },
+  { id: 'hijacker2MOQ', label: 'Hijacker 2 MOQ' },
+  { id: 'hijacker3Price', label: 'Hijacker 3 Price' },
+  { id: 'hijacker3', label: 'Hijacker 3' },
+
+  // Remaining columns (appended after Hijacker 3)
+  { id: 'productSubCategory', label: 'Product Sub Category' },
+  { id: 'vendorConfirmationPct', label: 'Vendor Confirmation %' },
+  { id: 'poReceivedAmount', label: 'PO_received_amount' },
+  { id: 'poReceivedUnits', label: 'PO_received_Units' },
+  { id: 'receiveFillRate', label: 'Receive_Fill_Rate' },
+  { id: 'overallVendorLeadTimeDays', label: 'Overall Vendor Lead Time (days)' },
+  { id: 'aged90PlusSellableInventory', label: 'Aged 90+ Days Sellable Inventory' },
+  { id: 'aged90PlusSellableUnits', label: 'Aged 90+ Days Sellable Units' },
+  { id: 'sellableInventoryAmount', label: 'Sellable Inventory Amount' },
+  { id: 'availableInventory', label: 'Available Inventory' },
+  { id: 'unsellableOnHandInventoryAmount', label: 'Unsellable On Hand Inventory Amount' },
+  { id: 'unsellableOnHandUnits', label: 'Unsellable On Hand Units' },
+  { id: 'reportDate', label: 'Date' },
+  { id: 'salesChannel', label: 'Sales Channel' },
+  { id: 'inStockFlag', label: 'in_stock_flag' },
+  { id: 'cumulativeInstockDays', label: 'cumulative_instock_days' },
+  { id: 'dayOfMonth', label: 'day_of_month' },
+  { id: 'instockRate', label: 'Instock Rate' },
+  { id: 'oosDate', label: 'OOS Date' },
+  { id: 'totalUnits', label: 'total_units' },
+  { id: 'sellThrough', label: 'sell_through' },
+  { id: 'minAvailableQty', label: 'min_available_qty' },
+  { id: 'maxAvailableQty', label: 'max_available_qty' },
+  { id: 'stockStatus', label: 'Stock_Status' },
+  { id: 'noLowStockWtOpenPOs', label: 'No/Low Stock wt Open POs' },
+  { id: 'noLowStockWtNoOpenPOs', label: 'No/Low Stock wt no Open POs' },
+  { id: 'hijacker3MOQ', label: 'Hijacker 3 MOQ' },
+  { id: 'currentOwnerMOQ', label: 'Current Owner MOQ' },
+];
+
+const BUYBOX_COLUMN_ORDER_STORAGE_KEY = 'pattex.buybox.columnOrder.v1';
+const BUYBOX_VISIBLE_COLUMNS_STORAGE_KEY = 'pattex.buybox.visibleColumns.v1';
 
 const textOrZero = (value) => {
   if (value == null || value === '') return '0';
@@ -42,6 +102,18 @@ const formatAed = (value) => {
   return `AED ${Math.round(n).toLocaleString()}`;
 };
 
+const parseNumLoose = (value) => {
+  if (value == null || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const s = String(value).trim();
+  if (!s) return 0;
+  // Keep digits, dot, and minus. This handles values like "1,234", "AED 1,234", etc.
+  const cleaned = s.replace(/[^0-9.-]+/g, '');
+  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.') return 0;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+};
+
 const pick = (row, keys) => {
   for (const k of keys) {
     const v = row?.[k];
@@ -62,87 +134,125 @@ export default function Buybox() {
     productName: '',
     category: '',
     packSize: '',
-    channel: '',
+    channel: 'Seller Central',
   });
   const [stockFilter, setStockFilter] = useState('ALL_SKUS');
-  const [maxSelectableDateStr] = useState(() => {
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const isSellerCentralSelected = useMemo(() => {
+    const s = String(filters.channel || '').trim().toLowerCase();
+    return s === 'seller central' || s.includes('seller central');
+  }, [filters.channel]);
+  const maxSelectableDateStr = useMemo(() => {
+    // Seller Central can select "today"; other channels keep the T-3 guard.
+    if (isSellerCentralSelected) return todayStr;
     const d = new Date();
     d.setDate(d.getDate() - 3);
     return d.toISOString().split('T')[0];
-  });
-  const [selectedDate, setSelectedDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 3);
-    return d.toISOString().split('T')[0];
-  });
+  }, [isSellerCentralSelected, todayStr]);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [comparison, setComparison] = useState(null);
-  const [visibleColumns, setVisibleColumns] = useState({
-    asin: true,
-    brand: true,
-    productSubCategory: true,
-    vendorConfirmationPct: true,
-    poReceivedAmount: true,
-    poReceivedUnits: true,
-    openPOs: true,
-    receiveFillRate: true,
-    overallVendorLeadTimeDays: true,
-    aged90PlusSellableInventory: true,
-    aged90PlusSellableUnits: true,
-    sellableInventoryAmount: true,
-    availableInventory: true,
-    unsellableOnHandInventoryAmount: true,
-    unsellableOnHandUnits: true,
-    reportDate: true,
-    packSize: true,
-    salesChannel: true,
-    inStockFlag: true,
-    cumulativeInstockDays: true,
-    dayOfMonth: true,
-    instockRate: true,
-    oosDate: true,
-    totalSales: true,
-    totalUnits: true,
-    sellThrough: true,
-    dos: true,
-    minAvailableQty: true,
-    maxAvailableQty: true,
-    stockStatus: true,
-    noLowStockWtOpenPOs: true,
-    noLowStockWtNoOpenPOs: true,
-    productName: true,
-    packType: true,
-    scIdealPrice: true,
-    vcIdealPrice: true,
-    productCategory: true,
-    currentOwner: true,
-    currentOwnerPrice: true,
-    currentOwnerMOQ: true,
-    hijacker1: true,
-    hijacker1Price: true,
-    hijacker1MOQ: true,
-    hijacker2: true,
-    hijacker2Price: true,
-    hijacker2MOQ: true,
-    hijacker3: true,
-    hijacker3Price: true,
-    hijacker3MOQ: true,
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    const defaults = {
+      asin: true,
+      brand: true,
+      productSubCategory: true,
+      vendorConfirmationPct: true,
+      poReceivedAmount: true,
+      poReceivedUnits: true,
+      openPOs: true,
+      receiveFillRate: true,
+      overallVendorLeadTimeDays: true,
+      aged90PlusSellableInventory: true,
+      aged90PlusSellableUnits: true,
+      sellableInventoryAmount: true,
+      availableInventory: true,
+      unsellableOnHandInventoryAmount: true,
+      unsellableOnHandUnits: true,
+      reportDate: true,
+      packSize: true,
+      salesChannel: true,
+      inStockFlag: true,
+      cumulativeInstockDays: true,
+      dayOfMonth: true,
+      instockRate: true,
+      oosDate: true,
+      totalSales: true,
+      vcAvailableInventory: true,
+      scAvailableInventory: true,
+      totalUnits: true,
+      sellThrough: true,
+      dos: true,
+      minAvailableQty: true,
+      maxAvailableQty: true,
+      stockStatus: true,
+      noLowStockWtOpenPOs: true,
+      noLowStockWtNoOpenPOs: true,
+      productName: true,
+      packType: true,
+      scIdealPrice: true,
+      vcIdealPrice: true,
+      productCategory: true,
+      currentOwner: true,
+      currentOwnerPrice: true,
+      currentOwnerMOQ: true,
+      hijacker1: true,
+      hijacker1Price: true,
+      hijacker1MOQ: true,
+      hijacker2: true,
+      hijacker2Price: true,
+      hijacker2MOQ: true,
+      hijacker3: true,
+      hijacker3Price: true,
+      hijacker3MOQ: true,
+    };
+
+    try {
+      const raw = localStorage.getItem(BUYBOX_VISIBLE_COLUMNS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const next = { ...defaults };
+        Object.keys(next).forEach((k) => {
+          if (typeof parsed[k] === 'boolean') next[k] = parsed[k];
+        });
+        return next;
+      }
+    } catch {
+      // ignore storage issues and fallback to defaults
+    }
+
+    return defaults;
   });
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const selectAllColumnsRef = useRef(null);
+  const [columnOrder, setColumnOrder] = useState(() => {
+    try {
+      const raw = localStorage.getItem(BUYBOX_COLUMN_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) return parsed;
+    } catch {
+      // ignore storage issues and fallback to default order
+    }
+    return BUYBOX_COLUMN_OPTIONS.map((c) => c.id);
+  });
+  const dragColumnIdRef = useRef(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [salesChannelOptionsFromApi, setSalesChannelOptionsFromApi] = useState([]);
+  const allSalesChannels = useSalesChannels();
   const [asinListModal, setAsinListModal] = useState(null); // null | 'with_buybox' | 'no_buybox'
 
   useEffect(() => {
     setLoading(true);
     setError('');
     const params = {};
+    const channel = filters.channel ? String(filters.channel).trim() : '';
     if (selectedDate) {
       params.customRangeStart = selectedDate;
       params.customRangeEnd = selectedDate;
     }
+    if (channel) params.salesChannel = channel;
     dashboardApi
       .getBuybox(params)
       .then((data) => {
@@ -157,7 +267,7 @@ export default function Buybox() {
         setComparison(null);
       })
       .finally(() => setLoading(false));
-  }, [selectedDate]);
+  }, [selectedDate, filters.channel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,10 +289,50 @@ export default function Buybox() {
     return () => { cancelled = true; };
   }, [filters.channel]); // intentionally not depending on selectedDate to avoid loops
 
+  // If channel changes to one with a stricter max, clamp the selected date.
+  useEffect(() => {
+    if (!selectedDate || !maxSelectableDateStr) return;
+    if (selectedDate > maxSelectableDateStr) {
+      setSelectedDate(maxSelectableDateStr);
+    }
+  }, [maxSelectableDateStr]);
+
   const rowsForSelectedDate = useMemo(() => {
     if (!selectedDate) return rows;
     return rows.filter((row) => normalizeReportDate(row.reportDate) === selectedDate);
   }, [rows, selectedDate]);
+
+  const last30DaySalesByAsin = useMemo(() => {
+    // Sum total_sales per ASIN from (selectedDate - 29 days) .. selectedDate (inclusive).
+    if (!selectedDate) return new Map();
+    const end = new Date(`${selectedDate}T00:00:00`);
+    if (Number.isNaN(end.getTime())) return new Map();
+    const start = new Date(end);
+    start.setDate(start.getDate() - 29);
+
+    const channel = filters.channel ? String(filters.channel).trim() : '';
+
+    const m = new Map();
+    rows.forEach((r) => {
+      if (!r?.asin) return;
+      if (channel) {
+        const rowChannel = String(pick(r, ['Sales Channel', 'salesChannel', 'channel']) ?? '').trim();
+        if (rowChannel !== channel) return;
+      }
+      const dStr = normalizeReportDate(r.reportDate);
+      if (!dStr) return;
+      const d = new Date(`${dStr}T00:00:00`);
+      if (Number.isNaN(d.getTime())) return;
+      if (d < start || d > end) return;
+
+      // Prefer numeric fields when available (backend often provides both numeric + raw string mirrors).
+      const rawSales = pick(r, ['totalSales', 'last30DaysSales', 'total_sales']);
+      const add = parseNumLoose(rawSales);
+      if (!add) return;
+      m.set(r.asin, (m.get(r.asin) || 0) + add);
+    });
+    return m;
+  }, [rows, selectedDate, filters.channel]);
 
   const asinOptions = useMemo(
     () => Array.from(new Set(rowsForSelectedDate.map((r) => r.asin).filter(Boolean))),
@@ -209,6 +359,7 @@ export default function Buybox() {
   );
   // Use API-provided list (all unique Sales Channels in DB) when available; else derive from current rows
   const channelOptions = useMemo(() => {
+    if (allSalesChannels.length > 0) return allSalesChannels;
     if (salesChannelOptionsFromApi.length > 0) {
       return salesChannelOptionsFromApi;
     }
@@ -218,7 +369,23 @@ export default function Buybox() {
       if (val && !seen.has(val.toLowerCase())) seen.set(val.toLowerCase(), val);
     });
     return Array.from(seen.values()).sort((a, b) => String(a).localeCompare(String(b)));
-  }, [rows, salesChannelOptionsFromApi]);
+  }, [allSalesChannels, rows, salesChannelOptionsFromApi]);
+
+  // Ensure the selected channel matches an available option on first render/load.
+  useEffect(() => {
+    if (!channelOptions || channelOptions.length === 0) return;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const current = normalize(filters.channel);
+    const optionsNormalized = channelOptions.map((c) => ({ raw: c, key: normalize(c) }));
+    const hasExact = current && optionsNormalized.some((o) => o.key === current);
+    if (hasExact) return;
+    const preferred = optionsNormalized.find((o) => o.key === 'seller central');
+    const next = (preferred?.raw || optionsNormalized[0]?.raw || '').toString();
+    if (next && next !== filters.channel) {
+      setFilters((f) => ({ ...f, channel: next }));
+      setPage(1);
+    }
+  }, [channelOptions]);
 
   const filteredRows = useMemo(() => {
     return rowsForSelectedDate.filter((row) => {
@@ -290,6 +457,140 @@ export default function Buybox() {
     setVisibleColumns((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const columnDefsById = useMemo(() => {
+    const defs = {};
+    BUYBOX_COLUMN_OPTIONS.forEach((c) => { defs[c.id] = c; });
+    return defs;
+  }, []);
+
+  const visibleOrderedColumnIds = useMemo(() => {
+    // Keep order stable and include only known column IDs.
+    const known = new Set(BUYBOX_COLUMN_OPTIONS.map((c) => c.id));
+    const orderedKnown = columnOrder.filter((id) => known.has(id));
+    const missing = BUYBOX_COLUMN_OPTIONS.map((c) => c.id).filter((id) => !orderedKnown.includes(id));
+    return [...orderedKnown, ...missing];
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BUYBOX_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(columnOrder));
+    } catch {
+      // ignore storage issues (e.g. privacy mode)
+    }
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BUYBOX_VISIBLE_COLUMNS_STORAGE_KEY, JSON.stringify(visibleColumns));
+    } catch {
+      // ignore storage issues (e.g. privacy mode)
+    }
+  }, [visibleColumns]);
+
+  const renderCellByColumnId = (id, row) => {
+    switch (id) {
+      case 'brand': return textOrZero(pick(row, ['Brand', 'brand']));
+      case 'asin': return textOrZero(row.asin);
+      case 'productName': return textOrZero(pick(row, ['Product Name', 'productName']));
+      case 'productCategory': return textOrZero(pick(row, ['Product Category', 'productCategory']));
+      case 'packType': return textOrZero(pick(row, ['Pack Type', 'packType']));
+      case 'packSize': return textOrZero(row.packSize);
+      case 'totalSales': return formatAed(last30DaySalesByAsin.get(row.asin) || 0);
+      case 'vcAvailableInventory': return textOrZero(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
+      case 'scAvailableInventory': return textOrZero(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
+      case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
+      case 'dos': return textOrZero(pick(row, ['DOS', 'dos']));
+      case 'scIdealPrice': return textOrZero(pick(row, ['SC Ideal Price', 'scIdealPrice']));
+      case 'vcIdealPrice': return textOrZero(pick(row, ['VC Ideal Price', 'vcIdealPrice']));
+      case 'currentOwner': return textOrZero(pick(row, ['Current Owner', 'currentOwner', 'currentBuyboxOwner']));
+      case 'currentOwnerPrice': return formatAed(pick(row, ['Current Owner Price', 'currentOwnerPrice', 'currentBuyboxPrice']));
+      case 'hijacker1': return textOrZero(pick(row, ['Hijacker 1', 'hijacker1']));
+      case 'hijacker1Price': return formatAed(pick(row, ['Hijacker 1 Price', 'hijacker1Price']));
+      case 'hijacker1MOQ': return textOrZero(pick(row, ['Hijacker 1 MOQ', 'hijacker1MOQ']));
+      case 'hijacker2': return textOrZero(pick(row, ['Hijacker 2', 'hijacker2']));
+      case 'hijacker2Price': return formatAed(pick(row, ['Hijacker 2 Price', 'hijacker2Price']));
+      case 'hijacker2MOQ': return textOrZero(pick(row, ['Hijacker 2 MOQ', 'hijacker2MOQ']));
+      case 'hijacker3Price': return formatAed(pick(row, ['Hijacker 3 Price', 'hijacker3Price']));
+      case 'hijacker3': return textOrZero(pick(row, ['Hijacker 3', 'hijacker3']));
+      case 'productSubCategory': return textOrZero(pick(row, ['Product Sub Category', 'productSubCategory']));
+      case 'vendorConfirmationPct': return percentOrZero(pick(row, ['Vendor Confirmation %', 'vendorConfirmationPct']));
+      case 'poReceivedAmount': return formatAed(pick(row, ['PO_received_amount', 'poReceivedAmount']));
+      case 'poReceivedUnits': return textOrZero(pick(row, ['PO_received_Units', 'poReceivedUnits']));
+      case 'receiveFillRate': return percentOrZero(pick(row, ['Receive_Fill_Rate', 'receiveFillRate']));
+      case 'overallVendorLeadTimeDays': return textOrZero(pick(row, ['Overall Vendor Lead Time (days)', 'overallVendorLeadTimeDays']));
+      case 'aged90PlusSellableInventory': return textOrZero(pick(row, ['Aged 90+ Days Sellable Inventory', 'aged90PlusSellableInventory']));
+      case 'aged90PlusSellableUnits': return textOrZero(pick(row, ['Aged 90+ Days Sellable Units', 'aged90PlusSellableUnits']));
+      case 'sellableInventoryAmount': return formatAed(pick(row, ['Sellable Inventory Amount', 'sellableInventoryAmount']));
+      case 'availableInventory': return textOrZero(pick(row, ['Available Inventory', 'availableInventory']));
+      case 'unsellableOnHandInventoryAmount': return textOrZero(pick(row, ['Unsellable On Hand Inventory Amount', 'unsellableOnHandInventoryAmount']));
+      case 'unsellableOnHandUnits': return textOrZero(pick(row, ['Unsellable On Hand Units', 'unsellableOnHandUnits']));
+      case 'reportDate': {
+        const v = pick(row, ['Date', 'reportDate']);
+        const s = v == null ? '' : String(v);
+        return s ? formatDateDDMonYY(s.slice(0, 10)) : '0';
+      }
+      case 'salesChannel': return textOrZero(pick(row, ['Sales Channel', 'salesChannel', 'channel']));
+      case 'inStockFlag': return textOrZero(pick(row, ['in_stock_flag', 'inStockFlag']));
+      case 'cumulativeInstockDays': return textOrZero(pick(row, ['cumulative_instock_days', 'cumulativeInstockDays']));
+      case 'dayOfMonth': return textOrZero(pick(row, ['day_of_month', 'dayOfMonth']));
+      case 'instockRate': return textOrZero(pick(row, ['Instock Rate', 'instockRate']));
+      case 'oosDate': return textOrZero(pick(row, ['OOS Date', 'oosDate']));
+      case 'totalUnits': return textOrZero(pick(row, ['total_units', 'totalUnits']));
+      case 'sellThrough': return textOrZero(pick(row, ['sell_through', 'sellThrough']));
+      case 'minAvailableQty': return textOrZero(pick(row, ['min_available_qty', 'minAvailableQty']));
+      case 'maxAvailableQty': return textOrZero(pick(row, ['max_available_qty', 'maxAvailableQty']));
+      case 'stockStatus': return textOrZero(pick(row, ['Stock_Status', 'stockStatus']));
+      case 'noLowStockWtOpenPOs': return textOrZero(pick(row, ['No/Low Stock wt Open POs', 'noLowStockWtOpenPOs']));
+      case 'noLowStockWtNoOpenPOs': return textOrZero(pick(row, ['No/Low Stock wt no Open POs', 'noLowStockWtNoOpenPOs']));
+      case 'currentOwnerMOQ': return textOrZero(pick(row, ['Current Owner MOQ', 'currentOwnerMOQ', 'moq']));
+      case 'hijacker3MOQ': return textOrZero(pick(row, ['Hijacker 3 MOQ', 'hijacker3MOQ']));
+      default: return '0';
+    }
+  };
+
+  const allColumnsSelected = useMemo(
+    () => BUYBOX_COLUMN_OPTIONS.every((c) => !!visibleColumns[c.id]),
+    [visibleColumns],
+  );
+  const someColumnsSelected = useMemo(
+    () => BUYBOX_COLUMN_OPTIONS.some((c) => !!visibleColumns[c.id]),
+    [visibleColumns],
+  );
+
+  useEffect(() => {
+    if (!selectAllColumnsRef.current) return;
+    selectAllColumnsRef.current.indeterminate = someColumnsSelected && !allColumnsSelected;
+  }, [someColumnsSelected, allColumnsSelected]);
+
+  const toggleAllColumns = () => {
+    setVisibleColumns((prev) => {
+      const shouldEnableAll = !BUYBOX_COLUMN_OPTIONS.every((c) => !!prev[c.id]);
+      const next = { ...prev };
+      BUYBOX_COLUMN_OPTIONS.forEach((c) => {
+        next[c.id] = shouldEnableAll;
+      });
+      return next;
+    });
+  };
+
+  const onColumnDragStart = (id) => {
+    dragColumnIdRef.current = id;
+  };
+  const onColumnDrop = (targetId) => {
+    const sourceId = dragColumnIdRef.current;
+    dragColumnIdRef.current = null;
+    if (!sourceId || sourceId === targetId) return;
+    setColumnOrder((prev) => {
+      const base = prev.length ? [...prev] : BUYBOX_COLUMN_OPTIONS.map((c) => c.id);
+      const from = base.indexOf(sourceId);
+      const to = base.indexOf(targetId);
+      if (from === -1 || to === -1) return base;
+      base.splice(from, 1);
+      base.splice(to, 0, sourceId);
+      return base;
+    });
+  };
+
   const clearAllFilters = () => {
     setFilters({
       search: '',
@@ -297,7 +598,7 @@ export default function Buybox() {
       productName: '',
       category: '',
       packSize: '',
-      channel: '',
+      channel: 'Seller Central',
     });
     setStockFilter('ALL_SKUS');
     setSelectedDate(maxSelectableDateStr);
@@ -310,7 +611,7 @@ export default function Buybox() {
     filters.productName ||
     filters.category ||
     filters.packSize ||
-    filters.channel !== '' ||
+    filters.channel !== 'Seller Central' ||
     stockFilter !== 'ALL_SKUS';
 
   const kpiTrends = useMemo(() => {
@@ -363,7 +664,7 @@ export default function Buybox() {
               Close
             </button>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap buybox-table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
@@ -406,6 +707,27 @@ export default function Buybox() {
 
   return (
     <>
+      <style>{`
+        /* Buybox-only: keep table headers visible while scrolling rows */
+        .table-wrap.buybox-table-wrap {
+          position: relative;
+          max-height: 65vh;
+          overflow: auto;
+        }
+
+        .table-wrap.buybox-table-wrap table {
+          border-collapse: separate;
+          border-spacing: 0;
+        }
+
+        .table-wrap.buybox-table-wrap thead th {
+          position: sticky;
+          top: 0;
+          z-index: 5;
+          background: var(--card-bg, #fff);
+          box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+      `}</style>
       <div className="card inventory-filters-card">
         <div className="filter-row filter-row-one">
           <div className="filter-group">
@@ -473,7 +795,6 @@ export default function Buybox() {
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">Select All</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -612,184 +933,64 @@ export default function Buybox() {
             </button>
             {showColumnPicker && (
               <div className="column-picker">
-                {[
-                  { id: 'asin', label: 'ASIN' },
-                  { id: 'brand', label: 'Brand' },
-                  { id: 'productSubCategory', label: 'Product Sub Category' },
-                  { id: 'vendorConfirmationPct', label: 'Vendor Confirmation %' },
-                  { id: 'poReceivedAmount', label: 'PO_received_amount' },
-                  { id: 'poReceivedUnits', label: 'PO_received_Units' },
-                  { id: 'openPOs', label: 'Open POs' },
-                  { id: 'receiveFillRate', label: 'Receive_Fill_Rate' },
-                  { id: 'overallVendorLeadTimeDays', label: 'Overall Vendor Lead Time (days)' },
-                  { id: 'aged90PlusSellableInventory', label: 'Aged 90+ Days Sellable Inventory' },
-                  { id: 'aged90PlusSellableUnits', label: 'Aged 90+ Days Sellable Units' },
-                  { id: 'sellableInventoryAmount', label: 'Sellable Inventory Amount' },
-                  { id: 'availableInventory', label: 'Available Inventory' },
-                  { id: 'unsellableOnHandInventoryAmount', label: 'Unsellable On Hand Inventory Amount' },
-                  { id: 'unsellableOnHandUnits', label: 'Unsellable On Hand Units' },
-                  { id: 'reportDate', label: 'Date' },
-                  { id: 'packSize', label: 'Pack Size' },
-                  { id: 'salesChannel', label: 'Sales Channel' },
-                  { id: 'inStockFlag', label: 'in_stock_flag' },
-                  { id: 'cumulativeInstockDays', label: 'cumulative_instock_days' },
-                  { id: 'dayOfMonth', label: 'day_of_month' },
-                  { id: 'instockRate', label: 'Instock Rate' },
-                  { id: 'oosDate', label: 'OOS Date' },
-                  { id: 'totalSales', label: 'total_sales' },
-                  { id: 'totalUnits', label: 'total_units' },
-                  { id: 'sellThrough', label: 'sell_through' },
-                  { id: 'dos', label: 'DOS' },
-                  { id: 'minAvailableQty', label: 'min_available_qty' },
-                  { id: 'maxAvailableQty', label: 'max_available_qty' },
-                  { id: 'stockStatus', label: 'Stock_Status' },
-                  { id: 'noLowStockWtOpenPOs', label: 'No/Low Stock wt Open POs' },
-                  { id: 'noLowStockWtNoOpenPOs', label: 'No/Low Stock wt no Open POs' },
-                  { id: 'productName', label: 'Product Name' },
-                  { id: 'packType', label: 'Pack Type' },
-                  { id: 'scIdealPrice', label: 'SC Ideal Price' },
-                  { id: 'vcIdealPrice', label: 'VC Ideal Price' },
-                  { id: 'productCategory', label: 'Product Category' },
-                  { id: 'currentOwner', label: 'Current Owner' },
-                  { id: 'currentOwnerPrice', label: 'Current Owner Price' },
-                  { id: 'currentOwnerMOQ', label: 'Current Owner MOQ' },
-                  { id: 'hijacker1', label: 'Hijacker 1' },
-                  { id: 'hijacker1Price', label: 'Hijacker 1 Price' },
-                  { id: 'hijacker1MOQ', label: 'Hijacker 1 MOQ' },
-                  { id: 'hijacker2', label: 'Hijacker 2' },
-                  { id: 'hijacker2Price', label: 'Hijacker 2 Price' },
-                  { id: 'hijacker2MOQ', label: 'Hijacker 2 MOQ' },
-                  { id: 'hijacker3', label: 'Hijacker 3' },
-                  { id: 'hijacker3Price', label: 'Hijacker 3 Price' },
-                  { id: 'hijacker3MOQ', label: 'Hijacker 3 MOQ' },
-                ].map((col) => (
-                  <label key={col.id} className="column-picker-item">
-                    <input
-                      type="checkbox"
-                      checked={!!visibleColumns[col.id]}
-                      onChange={() => toggleColumn(col.id)}
-                    />
-                    {col.label}
-                  </label>
-                ))}
+                <label key="__select_all__" className="column-picker-item">
+                  <input
+                    ref={selectAllColumnsRef}
+                    type="checkbox"
+                    checked={allColumnsSelected}
+                    onChange={toggleAllColumns}
+                  />
+                  Select all
+                </label>
+                <div style={{ margin: '6px 0 10px', fontSize: 12, opacity: 0.8 }}>
+                  Drag a row to reorder columns.
+                </div>
+                {visibleOrderedColumnIds.map((id) => {
+                  const col = columnDefsById[id];
+                  if (!col) return null;
+                  return (
+                    <label
+                      key={col.id}
+                      className="column-picker-item"
+                      draggable
+                      onDragStart={() => onColumnDragStart(col.id)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => onColumnDrop(col.id)}
+                      style={{ cursor: 'grab' }}
+                      title="Drag to reorder"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!visibleColumns[col.id]}
+                        onChange={() => toggleColumn(col.id)}
+                      />
+                      {col.label}
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap buybox-table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                {visibleColumns.asin && <th>ASIN</th>}
-                {visibleColumns.brand && <th>Brand</th>}
-                {visibleColumns.productSubCategory && <th>Product Sub Category</th>}
-                {visibleColumns.vendorConfirmationPct && <th>Vendor Confirmation %</th>}
-                {visibleColumns.poReceivedAmount && <th>PO_received_amount</th>}
-                {visibleColumns.poReceivedUnits && <th>PO_received_Units</th>}
-                {visibleColumns.openPOs && <th>Open POs</th>}
-                {visibleColumns.receiveFillRate && <th>Receive_Fill_Rate</th>}
-                {visibleColumns.overallVendorLeadTimeDays && <th>Overall Vendor Lead Time (days)</th>}
-                {visibleColumns.aged90PlusSellableInventory && <th>Aged 90+ Days Sellable Inventory</th>}
-                {visibleColumns.aged90PlusSellableUnits && <th>Aged 90+ Days Sellable Units</th>}
-                {visibleColumns.sellableInventoryAmount && <th>Sellable Inventory Amount</th>}
-                {visibleColumns.availableInventory && <th>Available Inventory</th>}
-                {visibleColumns.unsellableOnHandInventoryAmount && <th>Unsellable On Hand Inventory Amount</th>}
-                {visibleColumns.unsellableOnHandUnits && <th>Unsellable On Hand Units</th>}
-                {visibleColumns.reportDate && <th>Date</th>}
-                {visibleColumns.packSize && <th>Pack Size</th>}
-                {visibleColumns.salesChannel && <th>Sales Channel</th>}
-                {visibleColumns.inStockFlag && <th>in_stock_flag</th>}
-                {visibleColumns.cumulativeInstockDays && <th>cumulative_instock_days</th>}
-                {visibleColumns.dayOfMonth && <th>day_of_month</th>}
-                {visibleColumns.instockRate && <th>Instock Rate</th>}
-                {visibleColumns.oosDate && <th>OOS Date</th>}
-                {visibleColumns.totalSales && <th>total_sales</th>}
-                {visibleColumns.totalUnits && <th>total_units</th>}
-                {visibleColumns.sellThrough && <th>sell_through</th>}
-                {visibleColumns.dos && <th>DOS</th>}
-                {visibleColumns.minAvailableQty && <th>min_available_qty</th>}
-                {visibleColumns.maxAvailableQty && <th>max_available_qty</th>}
-                {visibleColumns.stockStatus && <th>Stock_Status</th>}
-                {visibleColumns.noLowStockWtOpenPOs && <th>No/Low Stock wt Open POs</th>}
-                {visibleColumns.noLowStockWtNoOpenPOs && <th>No/Low Stock wt no Open POs</th>}
-                {visibleColumns.productName && <th>Product Name</th>}
-                {visibleColumns.packType && <th>Pack Type</th>}
-                {visibleColumns.scIdealPrice && <th>SC Ideal Price</th>}
-                {visibleColumns.vcIdealPrice && <th>VC Ideal Price</th>}
-                {visibleColumns.productCategory && <th>Product Category</th>}
-                {visibleColumns.currentOwner && <th>Current Owner</th>}
-                {visibleColumns.currentOwnerPrice && <th>Current Owner Price</th>}
-                {visibleColumns.currentOwnerMOQ && <th>Current Owner MOQ</th>}
-                {visibleColumns.hijacker1 && <th>Hijacker 1</th>}
-                {visibleColumns.hijacker1Price && <th>Hijacker 1 Price</th>}
-                {visibleColumns.hijacker1MOQ && <th>Hijacker 1 MOQ</th>}
-                {visibleColumns.hijacker2 && <th>Hijacker 2</th>}
-                {visibleColumns.hijacker2Price && <th>Hijacker 2 Price</th>}
-                {visibleColumns.hijacker2MOQ && <th>Hijacker 2 MOQ</th>}
-                {visibleColumns.hijacker3 && <th>Hijacker 3</th>}
-                {visibleColumns.hijacker3Price && <th>Hijacker 3 Price</th>}
-                {visibleColumns.hijacker3MOQ && <th>Hijacker 3 MOQ</th>}
+                {visibleOrderedColumnIds.map((id) => {
+                  const def = columnDefsById[id];
+                  if (!def) return null;
+                  if (!visibleColumns[id]) return null;
+                  return <th key={id}>{def.label}</th>;
+                })}
               </tr>
             </thead>
             <tbody>
               {pagedRows.map((row) => (
                 <tr key={row._id ?? row.id ?? row.asin ?? `${row.productName || 'row'}-${row.reportDate || ''}`}>
-                  {visibleColumns.asin && <td>{textOrZero(row.asin)}</td>}
-                  {visibleColumns.brand && <td>{textOrZero(pick(row, ['Brand', 'brand']))}</td>}
-                  {visibleColumns.productSubCategory && <td>{textOrZero(pick(row, ['Product Sub Category', 'productSubCategory']))}</td>}
-                  {visibleColumns.vendorConfirmationPct && <td>{percentOrZero(pick(row, ['Vendor Confirmation %', 'vendorConfirmationPct']))}</td>}
-                  {visibleColumns.poReceivedAmount && <td>{formatAed(pick(row, ['PO_received_amount', 'poReceivedAmount']))}</td>}
-                  {visibleColumns.poReceivedUnits && <td>{textOrZero(pick(row, ['PO_received_Units', 'poReceivedUnits']))}</td>}
-                  {visibleColumns.openPOs && <td>{textOrZero(pick(row, ['Open POs', 'openPOs']))}</td>}
-                  {visibleColumns.receiveFillRate && <td>{percentOrZero(pick(row, ['Receive_Fill_Rate', 'receiveFillRate']))}</td>}
-                  {visibleColumns.overallVendorLeadTimeDays && <td>{textOrZero(pick(row, ['Overall Vendor Lead Time (days)', 'overallVendorLeadTimeDays']))}</td>}
-                  {visibleColumns.aged90PlusSellableInventory && <td>{textOrZero(pick(row, ['Aged 90+ Days Sellable Inventory', 'aged90PlusSellableInventory']))}</td>}
-                  {visibleColumns.aged90PlusSellableUnits && <td>{textOrZero(pick(row, ['Aged 90+ Days Sellable Units', 'aged90PlusSellableUnits']))}</td>}
-                  {visibleColumns.sellableInventoryAmount && <td>{formatAed(pick(row, ['Sellable Inventory Amount', 'sellableInventoryAmount']))}</td>}
-                  {visibleColumns.availableInventory && <td>{textOrZero(pick(row, ['Available Inventory', 'availableInventory']))}</td>}
-                  {visibleColumns.unsellableOnHandInventoryAmount && <td>{textOrZero(pick(row, ['Unsellable On Hand Inventory Amount', 'unsellableOnHandInventoryAmount']))}</td>}
-                  {visibleColumns.unsellableOnHandUnits && <td>{textOrZero(pick(row, ['Unsellable On Hand Units', 'unsellableOnHandUnits']))}</td>}
-                  {visibleColumns.reportDate && (
-                    <td>{(() => {
-                      const v = pick(row, ['Date', 'reportDate']);
-                      const s = v == null ? '' : String(v);
-                      return s ? formatDateDDMonYY(s.slice(0, 10)) : '0';
-                    })()}</td>
-                  )}
-                  {visibleColumns.packSize && <td>{textOrZero(row.packSize)}</td>}
-                  {visibleColumns.salesChannel && <td>{textOrZero(pick(row, ['Sales Channel', 'salesChannel', 'channel']))}</td>}
-                  {visibleColumns.inStockFlag && <td>{textOrZero(pick(row, ['in_stock_flag', 'inStockFlag']))}</td>}
-                  {visibleColumns.cumulativeInstockDays && <td>{textOrZero(pick(row, ['cumulative_instock_days', 'cumulativeInstockDays']))}</td>}
-                  {visibleColumns.dayOfMonth && <td>{textOrZero(pick(row, ['day_of_month', 'dayOfMonth']))}</td>}
-                  {visibleColumns.instockRate && <td>{textOrZero(pick(row, ['Instock Rate', 'instockRate']))}</td>}
-                  {visibleColumns.oosDate && <td>{textOrZero(pick(row, ['OOS Date', 'oosDate']))}</td>}
-                  {visibleColumns.totalSales && <td>{formatAed(pick(row, ['total_sales', 'totalSales']))}</td>}
-                  {visibleColumns.totalUnits && <td>{textOrZero(pick(row, ['total_units', 'totalUnits']))}</td>}
-                  {visibleColumns.sellThrough && <td>{textOrZero(pick(row, ['sell_through', 'sellThrough']))}</td>}
-                  {visibleColumns.dos && <td>{textOrZero(pick(row, ['DOS', 'dos']))}</td>}
-                  {visibleColumns.minAvailableQty && <td>{textOrZero(pick(row, ['min_available_qty', 'minAvailableQty']))}</td>}
-                  {visibleColumns.maxAvailableQty && <td>{textOrZero(pick(row, ['max_available_qty', 'maxAvailableQty']))}</td>}
-                  {visibleColumns.stockStatus && <td>{textOrZero(pick(row, ['Stock_Status', 'stockStatus']))}</td>}
-                  {visibleColumns.noLowStockWtOpenPOs && <td>{textOrZero(pick(row, ['No/Low Stock wt Open POs', 'noLowStockWtOpenPOs']))}</td>}
-                  {visibleColumns.noLowStockWtNoOpenPOs && <td>{textOrZero(pick(row, ['No/Low Stock wt no Open POs', 'noLowStockWtNoOpenPOs']))}</td>}
-                  {visibleColumns.productName && <td>{textOrZero(pick(row, ['Product Name', 'productName']))}</td>}
-                  {visibleColumns.packType && <td>{textOrZero(pick(row, ['Pack Type', 'packType']))}</td>}
-                  {visibleColumns.scIdealPrice && <td>{textOrZero(pick(row, ['SC Ideal Price', 'scIdealPrice']))}</td>}
-                  {visibleColumns.vcIdealPrice && <td>{textOrZero(pick(row, ['VC Ideal Price', 'vcIdealPrice']))}</td>}
-                  {visibleColumns.productCategory && <td>{textOrZero(pick(row, ['Product Category', 'productCategory']))}</td>}
-                  {visibleColumns.currentOwner && <td>{textOrZero(pick(row, ['Current Owner', 'currentOwner', 'currentBuyboxOwner']))}</td>}
-                  {visibleColumns.currentOwnerPrice && <td>{formatAed(pick(row, ['Current Owner Price', 'currentOwnerPrice', 'currentBuyboxPrice']))}</td>}
-                  {visibleColumns.currentOwnerMOQ && <td>{textOrZero(pick(row, ['Current Owner MOQ', 'currentOwnerMOQ', 'moq']))}</td>}
-
-                  {visibleColumns.hijacker1 && <td>{textOrZero(pick(row, ['Hijacker 1', 'hijacker1']))}</td>}
-                  {visibleColumns.hijacker1Price && <td>{formatAed(pick(row, ['Hijacker 1 Price', 'hijacker1Price']))}</td>}
-                  {visibleColumns.hijacker1MOQ && <td>{textOrZero(pick(row, ['Hijacker 1 MOQ', 'hijacker1MOQ']))}</td>}
-                  {visibleColumns.hijacker2 && <td>{textOrZero(pick(row, ['Hijacker 2', 'hijacker2']))}</td>}
-                  {visibleColumns.hijacker2Price && <td>{formatAed(pick(row, ['Hijacker 2 Price', 'hijacker2Price']))}</td>}
-                  {visibleColumns.hijacker2MOQ && <td>{textOrZero(pick(row, ['Hijacker 2 MOQ', 'hijacker2MOQ']))}</td>}
-                  {visibleColumns.hijacker3 && <td>{textOrZero(pick(row, ['Hijacker 3', 'hijacker3']))}</td>}
-                  {visibleColumns.hijacker3Price && <td>{formatAed(pick(row, ['Hijacker 3 Price', 'hijacker3Price']))}</td>}
-                  {visibleColumns.hijacker3MOQ && <td>{textOrZero(pick(row, ['Hijacker 3 MOQ', 'hijacker3MOQ']))}</td>}
+                  {visibleOrderedColumnIds.map((id) => {
+                    if (!visibleColumns[id]) return null;
+                    return <td key={id}>{renderCellByColumnId(id, row)}</td>;
+                  })}
                 </tr>
               ))}
             </tbody>

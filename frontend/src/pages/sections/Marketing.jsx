@@ -3,6 +3,7 @@ import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, CartesianGrid, 
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
+import { useSalesChannels } from '../../hooks/useSalesChannels';
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -260,13 +261,14 @@ export default function Marketing() {
     productName: '',
     productCategory: '',
     packSize: '',
-    salesChannel: '',
+    salesChannel: 'Seller Central',
   });
+  const allSalesChannels = useSalesChannels();
   const [dateFilterType, setDateFilterType] = useState('CURRENT_MONTH');
   const [comparison, setComparison] = useState(null);
   const [campaignFilters, setCampaignFilters] = useState({
     campaignType: '',
-    salesChannel: '',
+    salesChannel: 'Seller Central',
     dateRange: 'CURRENT_MONTH',
     campaignName: '',
     portfolio: '',
@@ -429,10 +431,10 @@ export default function Marketing() {
     filters.productName ||
     filters.productCategory ||
     filters.packSize ||
-    filters.salesChannel !== '';
+    filters.salesChannel !== 'Seller Central';
 
   const clearAllFilters = () => {
-    setFilters({ asin: '', productName: '', productCategory: '', packSize: '', salesChannel: '' });
+    setFilters({ asin: '', productName: '', productCategory: '', packSize: '', salesChannel: 'Seller Central' });
     setDateFilterType('CURRENT_MONTH');
   };
 
@@ -582,13 +584,28 @@ export default function Marketing() {
   );
   // Use API-provided list (all unique Sales Channels in DB) when available; else derive from skuRows
   const salesChannelOptions = useMemo(() => {
-    if (data?.salesChannelOptions?.length > 0) {
-      return data.salesChannelOptions;
-    }
+    if (allSalesChannels.length > 0) return allSalesChannels;
+    if (data?.salesChannelOptions?.length > 0) return data.salesChannelOptions;
     return Array.from(new Set(skuRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) =>
       String(a).localeCompare(String(b)),
     );
-  }, [data?.salesChannelOptions, skuRows]);
+  }, [allSalesChannels, data?.salesChannelOptions, skuRows]);
+
+  // Ensure the selected sales channel matches an available option on first render/load.
+  useEffect(() => {
+    if (!salesChannelOptions || salesChannelOptions.length === 0) return;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const current = normalize(filters.salesChannel);
+    const optionsNormalized = salesChannelOptions.map((c) => ({ raw: c, key: normalize(c) }));
+    const hasExact = current && optionsNormalized.some((o) => o.key === current);
+    if (hasExact) return;
+    const preferred = optionsNormalized.find((o) => o.key === 'seller central');
+    const next = (preferred?.raw || optionsNormalized[0]?.raw || '').toString();
+    if (next && next !== filters.salesChannel) {
+      setFilters((f) => ({ ...f, salesChannel: next }));
+      setSkuPage(1);
+    }
+  }, [salesChannelOptions]);
 
   const displayedSkuRows = useMemo(() => {
     let base = [...skuRows];
@@ -666,13 +683,29 @@ export default function Marketing() {
   );
   // Use same API list (all unique Sales Channels in DB) when available; else derive from campaign rows
   const campaignSalesChannelOptions = useMemo(() => {
+    if (allSalesChannels.length > 0) return allSalesChannels;
     if (data?.salesChannelOptions?.length > 0) {
       return data.salesChannelOptions;
     }
     return Array.from(new Set(campaignRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) =>
       String(a).localeCompare(String(b)),
     );
-  }, [data?.salesChannelOptions, campaignRows]);
+  }, [allSalesChannels, data?.salesChannelOptions, campaignRows]);
+
+  // Ensure the selected campaign sales channel matches an available option on first render/load.
+  useEffect(() => {
+    if (!campaignSalesChannelOptions || campaignSalesChannelOptions.length === 0) return;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const current = normalize(campaignFilters.salesChannel);
+    const optionsNormalized = campaignSalesChannelOptions.map((c) => ({ raw: c, key: normalize(c) }));
+    const hasExact = current && optionsNormalized.some((o) => o.key === current);
+    if (hasExact) return;
+    const preferred = optionsNormalized.find((o) => o.key === 'seller central');
+    const next = (preferred?.raw || optionsNormalized[0]?.raw || '').toString();
+    if (next && next !== campaignFilters.salesChannel) {
+      setCampaignFilters((f) => ({ ...f, salesChannel: next }));
+    }
+  }, [campaignSalesChannelOptions]);
   const campaignNameOptions = useMemo(
     () => Array.from(new Set(campaignRows.map((r) => r.campaignName).filter(Boolean))),
     [campaignRows],
@@ -950,7 +983,6 @@ export default function Marketing() {
               onChange={(e) => setFilters((f) => ({ ...f, salesChannel: e.target.value }))}
               aria-label="Sales Channel"
             >
-              <option value="">Select All</option>
               {salesChannelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -1476,7 +1508,6 @@ export default function Marketing() {
               onChange={(e) => setCampaignFilters((f) => ({ ...f, salesChannel: e.target.value }))}
               aria-label="Sales Channel"
             >
-              <option value="">Select All</option>
               {campaignSalesChannelOptions.map((ch) => (
                 <option key={ch} value={ch}>{ch}</option>
               ))}

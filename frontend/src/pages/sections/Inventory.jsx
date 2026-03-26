@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
+import { useSalesChannels } from '../../hooks/useSalesChannels';
 
 const STOCK_FILTERS = [
   { id: 'ALL_SKUS', label: 'All SKUs' },
@@ -76,20 +77,26 @@ export default function Inventory() {
     asin: '',
     productName: '',
     category: '',
-    channel: '',
+    channel: 'Seller Central',
   });
+  const allSalesChannels = useSalesChannels();
   const [stockFilter, setStockFilter] = useState('ALL_SKUS');
   const [metricModal, setMetricModal] = useState(null);
   const [todayStr] = useState(() => new Date().toISOString().split('T')[0]);
-  const [maxSelectableDateStr] = useState(() => {
+  const isSellerCentralSelected = useMemo(() => {
+    const s = String(filters.channel || '').trim().toLowerCase();
+    return s === 'seller central' || s.includes('seller central');
+  }, [filters.channel]);
+  const maxSelectableDateStr = useMemo(() => {
+    // Seller Central can select "today"; other channels keep the T-3 guard.
+    if (isSellerCentralSelected) return todayStr;
     const d = new Date();
     d.setDate(d.getDate() - 3);
     return d.toISOString().split('T')[0];
-  });
+  }, [isSellerCentralSelected, todayStr]);
   const [selectedDate, setSelectedDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 3);
-    return d.toISOString().split('T')[0];
+    // Match initial date to current default channel (Seller Central).
+    return new Date().toISOString().split('T')[0];
   });
   const [comparison, setComparison] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState({
@@ -116,10 +123,12 @@ export default function Inventory() {
     setLoading(true);
     setError('');
     const params = {};
+    const channel = filters.channel ? String(filters.channel).trim() : '';
     if (selectedDate) {
       params.customRangeStart = selectedDate;
       params.customRangeEnd = selectedDate;
     }
+    if (channel) params.salesChannel = channel;
     dashboardApi
       .getInventory(params)
       .then((data) => {
@@ -133,7 +142,7 @@ export default function Inventory() {
         setComparison(null);
       })
       .finally(() => setLoading(false));
-  }, [selectedDate]);
+  }, [selectedDate, filters.channel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,7 +179,26 @@ export default function Inventory() {
       ? rowsForProductNames.filter((r) => r.productName === filters.productName)
       : rowsForProductNames;
   const asinOptions = Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean)));
-  const channelOptions = Array.from(new Set(rows.map((r) => r.channel || r.salesChannel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+  const channelOptions = useMemo(() => {
+    if (allSalesChannels.length > 0) return allSalesChannels;
+    return Array.from(new Set(rows.map((r) => r.channel || r.salesChannel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+  }, [allSalesChannels, rows]);
+
+  // Ensure the selected channel matches an available option on first render/load.
+  useEffect(() => {
+    if (!channelOptions || channelOptions.length === 0) return;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const current = normalize(filters.channel);
+    const optionsNormalized = channelOptions.map((c) => ({ raw: c, key: normalize(c) }));
+    const hasExact = current && optionsNormalized.some((o) => o.key === current);
+    if (hasExact) return;
+    const preferred = optionsNormalized.find((o) => o.key === 'seller central');
+    const next = (preferred?.raw || optionsNormalized[0]?.raw || '').toString();
+    if (next && next !== filters.channel) {
+      setFilters((f) => ({ ...f, channel: next }));
+      setPage(1);
+    }
+  }, [channelOptions]);
 
   const applyFilters = (row) => {
     if (filters.search) {
@@ -218,7 +246,7 @@ export default function Inventory() {
 
   const clearAllFilters = () => {
     setSelectedDate(maxSelectableDateStr);
-    setFilters({ search: '', asin: '', productName: '', category: '', channel: '' });
+    setFilters({ search: '', asin: '', productName: '', category: '', channel: 'Seller Central' });
     setStockFilter('ALL_SKUS');
   };
 
@@ -228,8 +256,16 @@ export default function Inventory() {
     filters.asin ||
     filters.productName ||
     filters.category ||
-    filters.channel !== '' ||
+    filters.channel !== 'Seller Central' ||
     stockFilter !== 'ALL_SKUS';
+
+  // If channel changes to one with a stricter max, clamp the selected date.
+  useEffect(() => {
+    if (!selectedDate || !maxSelectableDateStr) return;
+    if (selectedDate > maxSelectableDateStr) {
+      setSelectedDate(maxSelectableDateStr);
+    }
+  }, [maxSelectableDateStr]);
 
   const filteredRowsNoDate = useMemo(
     () => rows.filter((row) => applyFilters(row) && applyStockFilter(row)),
@@ -453,7 +489,7 @@ export default function Inventory() {
               Close
             </button>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap inventory-table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
@@ -524,6 +560,27 @@ export default function Inventory() {
 
   return (
     <>
+      <style>{`
+        /* Inventory-only: keep table headers visible while scrolling rows */
+        .table-wrap.inventory-table-wrap {
+          position: relative;
+          max-height: 65vh;
+          overflow: auto;
+        }
+
+        .table-wrap.inventory-table-wrap table {
+          border-collapse: separate;
+          border-spacing: 0;
+        }
+
+        .table-wrap.inventory-table-wrap thead th {
+          position: sticky;
+          top: 0;
+          z-index: 5;
+          background: var(--card-bg, #fff);
+          box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+      `}</style>
       <div className="card inventory-filters-card">
         <div className="filter-row filter-row-one">
           <div className="filter-group">
@@ -579,7 +636,6 @@ export default function Inventory() {
               value={filters.channel}
               onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
             >
-              <option value="">Sales Channel</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -734,7 +790,7 @@ export default function Inventory() {
             )}
           </div>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap inventory-table-wrap">
           <table className="data-table">
             <thead>
               <tr>
