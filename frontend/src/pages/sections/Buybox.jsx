@@ -30,6 +30,7 @@ const BUYBOX_COLUMN_OPTIONS = [
   { id: 'packType', label: 'Pack Type' },
   { id: 'packSize', label: 'Pack Size' },
   { id: 'totalSales', label: 'Last 30 Days Sales' },
+  { id: 'totalSale', label: 'Total Sale' },
   { id: 'vcAvailableInventory', label: 'VC Available Inventory' },
   { id: 'scAvailableInventory', label: 'SC Available Inventory' },
   { id: 'openPOs', label: 'Open POs' },
@@ -151,6 +152,7 @@ export default function Buybox() {
   }, [isSellerCentralSelected, todayStr]);
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [comparison, setComparison] = useState(null);
+  const [last30SalesByAsinMap, setLast30SalesByAsinMap] = useState(() => new Map());
   const [visibleColumns, setVisibleColumns] = useState(() => {
     const defaults = {
       asin: true,
@@ -177,6 +179,7 @@ export default function Buybox() {
       instockRate: true,
       oosDate: true,
       totalSales: true,
+      totalSale: true,
       vcAvailableInventory: true,
       scAvailableInventory: true,
       totalUnits: true,
@@ -228,7 +231,15 @@ export default function Buybox() {
     try {
       const raw = localStorage.getItem(BUYBOX_COLUMN_ORDER_STORAGE_KEY);
       const parsed = raw ? JSON.parse(raw) : null;
-      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) return parsed;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+        const known = BUYBOX_COLUMN_OPTIONS.map((c) => c.id);
+        const base = parsed.filter((id) => known.includes(id));
+        // Ensure newly added columns are still draggable (append missing).
+        known.forEach((id) => {
+          if (!base.includes(id)) base.push(id);
+        });
+        return base;
+      }
     } catch {
       // ignore storage issues and fallback to default order
     }
@@ -249,6 +260,7 @@ export default function Buybox() {
     const params = {};
     const channel = filters.channel ? String(filters.channel).trim() : '';
     if (selectedDate) {
+      // Keep the main Buybox payload fast by fetching only the selected day.
       params.customRangeStart = selectedDate;
       params.customRangeEnd = selectedDate;
     }
@@ -267,6 +279,34 @@ export default function Buybox() {
         setComparison(null);
       })
       .finally(() => setLoading(false));
+  }, [selectedDate, filters.channel]);
+
+  useEffect(() => {
+    if (!selectedDate) return;
+    const end = new Date(`${selectedDate}T00:00:00`);
+    if (Number.isNaN(end.getTime())) return;
+    const start = new Date(end);
+    start.setDate(start.getDate() - 29);
+    const channel = filters.channel ? String(filters.channel).trim() : '';
+
+    dashboardApi
+      .getBuyboxLast30Sales({
+        customRangeStart: start.toISOString().slice(0, 10),
+        customRangeEnd: selectedDate,
+        ...(channel ? { salesChannel: channel } : {}),
+      })
+      .then((resp) => {
+        const obj = resp?.last30SalesByAsin || {};
+        const m = new Map();
+        Object.keys(obj).forEach((k) => {
+          if (!k) return;
+          m.set(k, parseNumLoose(obj[k]));
+        });
+        setLast30SalesByAsinMap(m);
+      })
+      .catch(() => {
+        setLast30SalesByAsinMap(new Map());
+      });
   }, [selectedDate, filters.channel]);
 
   useEffect(() => {
@@ -301,38 +341,6 @@ export default function Buybox() {
     if (!selectedDate) return rows;
     return rows.filter((row) => normalizeReportDate(row.reportDate) === selectedDate);
   }, [rows, selectedDate]);
-
-  const last30DaySalesByAsin = useMemo(() => {
-    // Sum total_sales per ASIN from (selectedDate - 29 days) .. selectedDate (inclusive).
-    if (!selectedDate) return new Map();
-    const end = new Date(`${selectedDate}T00:00:00`);
-    if (Number.isNaN(end.getTime())) return new Map();
-    const start = new Date(end);
-    start.setDate(start.getDate() - 29);
-
-    const channel = filters.channel ? String(filters.channel).trim() : '';
-
-    const m = new Map();
-    rows.forEach((r) => {
-      if (!r?.asin) return;
-      if (channel) {
-        const rowChannel = String(pick(r, ['Sales Channel', 'salesChannel', 'channel']) ?? '').trim();
-        if (rowChannel !== channel) return;
-      }
-      const dStr = normalizeReportDate(r.reportDate);
-      if (!dStr) return;
-      const d = new Date(`${dStr}T00:00:00`);
-      if (Number.isNaN(d.getTime())) return;
-      if (d < start || d > end) return;
-
-      // Prefer numeric fields when available (backend often provides both numeric + raw string mirrors).
-      const rawSales = pick(r, ['totalSales', 'last30DaysSales', 'total_sales']);
-      const add = parseNumLoose(rawSales);
-      if (!add) return;
-      m.set(r.asin, (m.get(r.asin) || 0) + add);
-    });
-    return m;
-  }, [rows, selectedDate, filters.channel]);
 
   const asinOptions = useMemo(
     () => Array.from(new Set(rowsForSelectedDate.map((r) => r.asin).filter(Boolean))),
@@ -495,7 +503,8 @@ export default function Buybox() {
       case 'productCategory': return textOrZero(pick(row, ['Product Category', 'productCategory']));
       case 'packType': return textOrZero(pick(row, ['Pack Type', 'packType']));
       case 'packSize': return textOrZero(row.packSize);
-      case 'totalSales': return formatAed(last30DaySalesByAsin.get(row.asin) || 0);
+      case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
+      case 'totalSale': return formatAed(pick(row, ['totalSales', 'total_sales']));
       case 'vcAvailableInventory': return textOrZero(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
       case 'scAvailableInventory': return textOrZero(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
       case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
@@ -581,7 +590,9 @@ export default function Buybox() {
     dragColumnIdRef.current = null;
     if (!sourceId || sourceId === targetId) return;
     setColumnOrder((prev) => {
-      const base = prev.length ? [...prev] : BUYBOX_COLUMN_OPTIONS.map((c) => c.id);
+      const known = BUYBOX_COLUMN_OPTIONS.map((c) => c.id);
+      // Always operate on a full order list (includes newly added columns).
+      const base = [...new Set([...(Array.isArray(prev) ? prev : []).filter((id) => known.includes(id)), ...known])];
       const from = base.indexOf(sourceId);
       const to = base.indexOf(targetId);
       if (from === -1 || to === -1) return base;

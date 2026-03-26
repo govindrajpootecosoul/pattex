@@ -1666,7 +1666,11 @@ router.get('/marketing', async (req, res) => {
       return ymd ? ymd.slice(0, 7) : '';
     };
 
-    const normalizeKey = (v) => String(v ?? '').trim().toLowerCase();
+    const normalizeKey = (v) =>
+      String(v ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
 
     const applyMarketingFiltersNoChannel = (doc) => {
       if (asinFilter && normalizeKey(doc.ASIN ?? doc.asin ?? '') !== normalizeKey(asinFilter)) return false;
@@ -1887,7 +1891,13 @@ router.get('/marketing', async (req, res) => {
         doc.salesChannel ??
         doc.channel ??
         '';
-      const key = String(name || '').trim() || `UNKNOWN_${type}`;
+      // Include channel + type in the key so different channels don't merge into one campaign.
+      const keyParts = [
+        String(name || '').trim() || `UNKNOWN_${type}`,
+        String(type || '').trim(),
+        String(salesChannel || '').trim(),
+      ];
+      const key = keyParts.join('||');
       if (!byCampaign.has(key)) {
         byCampaign.set(key, {
           campaignName: name,
@@ -1923,10 +1933,11 @@ router.get('/marketing', async (req, res) => {
       const organicRevenue = Math.max(0, r.overallRevenue - r.adSales);
 
       return {
-        id: `${r.campaignName}-${idx}`,
+        id: `${r.campaignName}-${r.salesChannel || 'UNKNOWN'}-${idx}`,
         campaignType: r.campaignType,
         campaignName: r.campaignName,
         portfolio: r.portfolio,
+        salesChannel: r.salesChannel,
         impressions: r.impressions,
         clicks: r.clicks,
         CTR: Math.round(ctr * 100) / 100,
@@ -2815,6 +2826,75 @@ router.get('/buybox', async (req, res) => {
   } catch (error) {
     console.error('Error fetching buybox data:', error);
     res.status(500).json({ message: 'Failed to fetch buybox data' });
+  }
+});
+
+router.get('/buybox-last30-sales', async (req, res) => {
+  try {
+    const cacheKey = buildDashboardCacheKey(req, 'buybox-last30-sales');
+    const ttlSeconds = 600; // 10 minutes
+    const cached = await Cache.get(cacheKey);
+    if (cached) {
+      res.set('X-Cache', 'HIT');
+      res.set('Cache-Control', `private, max-age=${ttlSeconds}`);
+      return res.json(cached);
+    }
+
+    const reqCustomRangeEnd = req.query.customRangeEnd || '';
+    const reqCustomRangeStart = req.query.customRangeStart || '';
+    const reqSalesChannel = req.query.salesChannel ? String(req.query.salesChannel).trim().toLowerCase() : '';
+
+    let docsFilter = {};
+    if (reqCustomRangeStart) {
+      const selectedKey = parseDateKey(reqCustomRangeStart);
+      const endKey = parseDateKey(reqCustomRangeEnd) || selectedKey;
+
+      if (selectedKey) {
+        if (selectedKey === endKey) {
+          docsFilter = dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], selectedKey);
+        } else {
+          const startDate = new Date(selectedKey);
+          const endDate = new Date(endKey);
+          if (!Number.isNaN(startDate.getTime()) && !Number.isNaN(endDate.getTime())) {
+            const days = dateList(startDate, endDate);
+            const clauses = [];
+            days.forEach((dayKey) => {
+              const q = dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], dayKey);
+              if (q?.$or?.length) clauses.push(...q.$or);
+            });
+            if (clauses.length) docsFilter = { $or: clauses };
+          }
+        }
+      }
+    }
+
+    // Sales live in the `revenues` collection, so compute Last 30 Days Sales from Revenue.
+    const docs = await req.companyModels.Revenue.find(docsFilter).lean();
+
+    const byAsin = new Map();
+    docs.forEach((doc) => {
+      if (reqSalesChannel) {
+        const ch = revenueChannelFromDoc(doc);
+        const norm = ch == null ? '' : String(ch).trim().toLowerCase();
+        if (!norm) return;
+        const matches = norm === reqSalesChannel || norm.includes(reqSalesChannel) || reqSalesChannel.includes(norm);
+        if (!matches) return;
+      }
+      const asin = revenueAsinFromDoc(doc);
+      if (!asin) return;
+      const sales = parseNum(doc.total_sales);
+      if (!sales) return;
+      byAsin.set(asin, (byAsin.get(asin) || 0) + sales);
+    });
+
+    const payload = { last30SalesByAsin: Object.fromEntries(byAsin.entries()) };
+    await Cache.set(cacheKey, payload, ttlSeconds);
+    res.set('X-Cache', 'MISS');
+    res.set('Cache-Control', `private, max-age=${ttlSeconds}`);
+    return res.json(payload);
+  } catch (error) {
+    console.error('Error fetching buybox last30 sales:', error);
+    res.status(500).json({ message: 'Failed to fetch buybox last30 sales' });
   }
 });
 router.get('/product-details', (req, res) => res.json(productDetails));

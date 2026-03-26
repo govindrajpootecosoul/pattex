@@ -126,6 +126,14 @@ export const dashboardApi = {
     const query = q.toString();
     return request(`/dashboard/buybox${query ? `?${query}` : ''}`);
   },
+  getBuyboxLast30Sales: (params) => {
+    const q = new URLSearchParams();
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    const query = q.toString();
+    return request(`/dashboard/buybox-last30-sales${query ? `?${query}` : ''}`);
+  },
   getMarketing: (params) => {
     const q = new URLSearchParams();
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);

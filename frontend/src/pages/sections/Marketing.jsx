@@ -251,6 +251,23 @@ const CAMPAIGN_GROUP_FILTERS = [
   { id: 'WORST_REVENUE', label: 'Top 10 Worst Campaigns - Revenue' },
 ];
 
+function Skeleton({ width = '100%', height = 12, style }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width,
+        height,
+        borderRadius: 10,
+        background: 'linear-gradient(90deg, rgba(148,163,184,0.18), rgba(148,163,184,0.34), rgba(148,163,184,0.18))',
+        backgroundSize: '200% 100%',
+        animation: 'pattex-skeleton 1.2s ease-in-out infinite',
+        ...style,
+      }}
+    />
+  );
+}
+
 export default function Marketing() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -291,9 +308,11 @@ export default function Marketing() {
   const [skuPage, setSkuPage] = useState(1);
   const [skuPageSize, setSkuPageSize] = useState(20);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
+  const [showProcessing, setShowProcessing] = useState(false);
 
   useEffect(() => {
     setLoading(true);
+    if (hasLoadedOnce) setShowProcessing(true);
     const params = {};
     if (dateFilterType) params.dateFilterType = dateFilterType;
     if (filters.asin) params.asin = filters.asin;
@@ -349,7 +368,10 @@ export default function Marketing() {
         });
         setFunnelTotals(null);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setShowProcessing(false);
+      });
   }, [
     dateFilterType,
     filters.asin,
@@ -365,6 +387,23 @@ export default function Marketing() {
   ]);
 
   const metrics = data && !data.comingSoon && data.metrics ? data.metrics : {};
+  const isProcessing = loading && hasLoadedOnce;
+
+  const readFirst = (obj, keys) => {
+    if (!obj) return undefined;
+    for (const k of keys) {
+      if (k == null) continue;
+      if (Object.prototype.hasOwnProperty.call(obj, k)) return obj[k];
+    }
+    return undefined;
+  };
+
+  const readNumber = (obj, keys) => {
+    const raw = readFirst(obj, keys);
+    if (raw == null) return null;
+    const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/,/g, '').trim());
+    return Number.isFinite(n) ? n : null;
+  };
 
   const sumByKey = (rows, keys) => {
     if (!Array.isArray(rows) || rows.length === 0) return null;
@@ -728,9 +767,9 @@ export default function Marketing() {
       base = base.filter((r) => r.portfolio === campaignFilters.portfolio);
     }
     if (campaignFilters.salesChannel) {
-      base = base.filter(
-        (r) => String(r.salesChannel || r.channel || '') === String(campaignFilters.salesChannel),
-      );
+      const normalize = (v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const selected = normalize(campaignFilters.salesChannel);
+      base = base.filter((r) => normalize(r.salesChannel || r.channel || '') === selected);
     }
     if (campaignFilters.dateRange) {
       const range = getDateRangeForFilter(campaignFilters.dateRange);
@@ -740,8 +779,23 @@ export default function Marketing() {
     }
 
     if (campaignGroupFilter) {
-      const byAcos = (row) => Number(row['ACoS']) || 0;
-      const byRevenue = (row) => Number(row['Overall Revenue']) || 0;
+      const byAcos = (row) => {
+        const acos =
+          readNumber(row, ['ACoS', 'acos', 'total_advertising_cost_of_sales_(acos)']) ??
+          null;
+        if (acos != null) return acos;
+        const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend', 'ads spend']);
+        const adSales = readNumber(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales', 'ads sales']);
+        if (spend != null && adSales != null && adSales > 0) return (spend / adSales) * 100;
+        return 0;
+      };
+      const byRevenue = (row) => {
+        const rev =
+          readNumber(row, ['Overall Revenue', 'overallRevenue', 'total_sales', 'totalSales', 'sales']) ??
+          null;
+        if (rev != null) return rev;
+        return 0;
+      };
       if (campaignGroupFilter === 'HIGH_ACOS') {
         base = base
           .filter((r) => byAcos(r) > 0)
@@ -770,6 +824,7 @@ export default function Marketing() {
     campaignRows,
     campaignFilters.campaignType,
     campaignFilters.campaignName,
+    campaignFilters.portfolio,
     campaignFilters.salesChannel,
     campaignFilters.dateRange,
     campaignGroupFilter,
@@ -919,6 +974,11 @@ export default function Marketing() {
 
   return (
     <>
+      {/* local-only keyframes for skeleton shimmer */}
+      <style>
+        {`@keyframes pattex-skeleton { 0% { background-position: 0% 0%; } 100% { background-position: 200% 0%; } }`}
+      </style>
+
       <div className="card marketing-filters-card">
         <div className="filter-row filter-row-one">
           <div className="filter-group">
@@ -1035,9 +1095,13 @@ export default function Marketing() {
           <div className="kpi-item kpi-green">
             <div className="label">Ad Spend</div>
             <div className="value value-primary">
-              {typeof adSpend === 'number'
-                ? `AED ${adSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : adSpend}
+              {isProcessing ? (
+                <Skeleton width={120} height={20} />
+              ) : typeof adSpend === 'number' ? (
+                `AED ${adSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              ) : (
+                adSpend
+              )}
               <span className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.adSpend.value})
               </span>
@@ -1074,11 +1138,9 @@ export default function Marketing() {
                 fontSize: 22,
               }}
             >
-              <span>
-                {typeof adRevenue === 'number'
-                  ? `AED ${adRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : adRevenue}
-              </span>
+              <span>{isProcessing ? <Skeleton width={140} height={20} /> : typeof adRevenue === 'number'
+                ? `AED ${adRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : adRevenue}</span>
               <span
                 className={`kpi-trend-inline ${
                   kpiTrends.adRevenuePerUnit.type === 'negative'
@@ -1129,11 +1191,9 @@ export default function Marketing() {
                 fontSize: 22,
               }}
             >
-              <span>
-                {typeof overallRevenue === 'number'
-                  ? `AED ${overallRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : overallRevenue}
-              </span>
+              <span>{isProcessing ? <Skeleton width={160} height={20} /> : typeof overallRevenue === 'number'
+                ? `AED ${overallRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : overallRevenue}</span>
               <span
                 className={`kpi-trend-inline ${
                   kpiTrends.overallRevenue.type === 'negative'
@@ -1157,7 +1217,7 @@ export default function Marketing() {
           <div className="kpi-item kpi-violet">
             <div className="label">TACOS</div>
             <div className="value value-primary">
-              {tacos}
+              {isProcessing ? <Skeleton width={80} height={20} /> : tacos}
               <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'negative' ? 'negative' : kpiTrends.tacos.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.tacos.value})
               </span>
@@ -1512,6 +1572,12 @@ export default function Marketing() {
                 <option key={ch} value={ch}>{ch}</option>
               ))}
             </select>
+            {(showProcessing || isProcessing) && (
+              <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Skeleton width={12} height={12} style={{ borderRadius: 999 }} />
+                <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>Loading…</span>
+              </div>
+            )}
           </div>
           <div className="filter-group">
             <label>Date Range</label>
@@ -1562,9 +1628,13 @@ export default function Marketing() {
           <div className="kpi-item kpi-green">
             <div className="label">Ad Spend</div>
             <div className="value value-primary">
-              {typeof campaignAdSpend === 'number'
-                ? `AED ${campaignAdSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : campaignAdSpend}
+              {isProcessing ? (
+                <Skeleton width={120} height={20} />
+              ) : typeof campaignAdSpend === 'number' ? (
+                `AED ${campaignAdSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              ) : (
+                campaignAdSpend
+              )}
               <span className={`kpi-trend-inline ${kpiTrends.adSpend.type === 'negative' ? 'negative' : kpiTrends.adSpend.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.adSpend.value})
               </span>
@@ -1574,9 +1644,13 @@ export default function Marketing() {
           <div className="kpi-item kpi-blue">
             <div className="label">Ad Revenue</div>
             <div className="value value-primary">
-              {typeof campaignAdRevenue === 'number'
-                ? `AED ${campaignAdRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : campaignAdRevenue}
+              {isProcessing ? (
+                <Skeleton width={140} height={20} />
+              ) : typeof campaignAdRevenue === 'number' ? (
+                `AED ${campaignAdRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              ) : (
+                campaignAdRevenue
+              )}
               <span className={`kpi-trend-inline ${kpiTrends.adRevenuePerUnit.type === 'negative' ? 'negative' : kpiTrends.adRevenuePerUnit.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.adRevenuePerUnit.value})
               </span>
@@ -1586,9 +1660,13 @@ export default function Marketing() {
           <div className="kpi-item kpi-amber">
             <div className="label">Overall Revenue</div>
             <div className="value value-primary">
-              {typeof campaignOverallRevenue === 'number'
-                ? `AED ${campaignOverallRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : campaignOverallRevenue}
+              {isProcessing ? (
+                <Skeleton width={160} height={20} />
+              ) : typeof campaignOverallRevenue === 'number' ? (
+                `AED ${campaignOverallRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              ) : (
+                campaignOverallRevenue
+              )}
               <span className={`kpi-trend-inline ${kpiTrends.overallRevenue.type === 'negative' ? 'negative' : kpiTrends.overallRevenue.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.overallRevenue.value})
               </span>
@@ -1598,7 +1676,7 @@ export default function Marketing() {
           <div className="kpi-item kpi-violet">
             <div className="label">TACOS</div>
             <div className="value value-primary">
-              {campaignTacos}
+              {isProcessing ? <Skeleton width={80} height={20} /> : campaignTacos}
               <span className={`kpi-trend-inline ${kpiTrends.tacos.type === 'negative' ? 'negative' : kpiTrends.tacos.type === 'neutral' ? 'neutral' : ''}`}>
                 ({kpiTrends.tacos.value})
               </span>
@@ -1803,7 +1881,27 @@ export default function Marketing() {
               </tr>
             </thead>
             <tbody>
-              {filteredCampaignRows.length === 0 ? (
+              {isProcessing ? (
+                Array.from({ length: 8 }).map((_, i) => (
+                  <tr key={`sk-${i}`}>
+                    <td><Skeleton height={12} /></td>
+                    <td><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className="col-num"><Skeleton height={12} /></td>
+                    {CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).map((col) => (
+                      <td key={`${col}-${i}`} className="col-num">
+                        <Skeleton height={12} />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : filteredCampaignRows.length === 0 ? (
                 <tr>
                   <td
                     colSpan={
@@ -1820,17 +1918,37 @@ export default function Marketing() {
                   <tr key={row.id ?? idx}>
                     <td>{row.campaignType ?? '—'}</td>
                     <td>{row.campaignName ?? '—'}</td>
-                    <td className="col-num">{formatCampaignTableCell('Impressions', row.impressions)}</td>
-                    <td className="col-num">{formatCampaignTableCell('Clicks', row.clicks)}</td>
-                    <td className="col-num">{formatCampaignTableCell('CTR', row.CTR)}</td>
-                    <td className="col-num">{formatCampaignTableCell('CPC', row.CPC)}</td>
-                    <td className="col-num">{formatCampaignTableCell('CVR', row.CVR)}</td>
-                    <td className="col-num">{formatCampaignTableCell('Ad Spend', row['Ad Spend'])}</td>
-                    <td className="col-num">{formatCampaignTableCell('Ad Unit Sold', row['Ad Unit Sold'])}</td>
-                    <td className="col-num">{formatCampaignTableCell('Ad Sales', row['Ad Sales'])}</td>
+                    <td className="col-num">{formatCampaignTableCell('Impressions', readFirst(row, ['impressions', 'Impressions']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('Clicks', readFirst(row, ['clicks', 'Clicks']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('CTR', readFirst(row, ['CTR', 'ctr', 'click_thru_rate_(ctr)', 'click_thru_rate', 'click_through_rate']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('CPC', readFirst(row, ['CPC', 'cpc', 'cost_per_click_(cpc)', 'cost_per_click', 'costPerClick']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('CVR', readFirst(row, ['CVR', 'cvr', 'conversion_rate', 'cvr_(%)', 'cvr%']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('Ad Spend', readFirst(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('Ad Unit Sold', readFirst(row, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold', 'ad_unit_sold']))}</td>
+                    <td className="col-num">{formatCampaignTableCell('Ad Sales', readFirst(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']))}</td>
                     {CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).map((col) => (
                       <td key={col} className="col-num">
-                        {formatCampaignTableCell(col, row[col])}
+                        {(() => {
+                          // Allow both backend-friendly labels and raw DB keys.
+                          const direct =
+                            readFirst(row, [col]) ??
+                            (col === 'TACOS' ? readFirst(row, ['TACoS', 'tacos']) : undefined);
+                          if (direct != null) return formatCampaignTableCell(col, direct);
+
+                          // Compute TACOS/ACoS if backend sent only raw spend/sales.
+                          if (col === 'TACOS') {
+                            const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+                            const rev = readNumber(row, ['Overall Revenue', 'overallRevenue', 'total_sales', 'totalSales', 'sales']);
+                            if (spend != null && rev != null && rev > 0) return formatCampaignTableCell(col, (spend / rev) * 100);
+                          }
+                          if (col === 'ACoS') {
+                            const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+                            const adSales = readNumber(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']);
+                            if (spend != null && adSales != null && adSales > 0) return formatCampaignTableCell(col, (spend / adSales) * 100);
+                          }
+
+                          return formatCampaignTableCell(col, undefined);
+                        })()}
                       </td>
                     ))}
                   </tr>

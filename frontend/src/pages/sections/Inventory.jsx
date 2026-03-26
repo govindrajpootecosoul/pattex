@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
@@ -17,6 +17,24 @@ const METRIC_IDS = {
   DOS: 'DOS',
   INSTOCK_RATE: 'INSTOCK_RATE',
 };
+
+const INVENTORY_COLUMN_OPTIONS = [
+  { id: 'asin', label: 'ASIN' },
+  { id: 'productName', label: 'Product Name' },
+  { id: 'category', label: 'Category' },
+  { id: 'packSize', label: 'Pack Size' },
+  { id: 'channel', label: 'Sales Channel' },
+  { id: 'available', label: 'Available' },
+  { id: 'sales30', label: '30D Sales' },
+  { id: 'dos', label: 'DOS' },
+  { id: 'instockRate', label: 'Instock Rate' },
+  { id: 'openPos', label: 'Open POs' },
+  { id: 'oosDate', label: 'OOS Date' },
+  { id: 'status', label: 'Status' },
+];
+
+const INVENTORY_COLUMN_ORDER_STORAGE_KEY = 'pattex.inventory.columnOrder.v1';
+const INVENTORY_VISIBLE_COLUMNS_STORAGE_KEY = 'pattex.inventory.visibleColumns.v1';
 
 function getStatusBadgeClass(status) {
   if (!status) return 'badge-instock';
@@ -99,21 +117,56 @@ export default function Inventory() {
     return new Date().toISOString().split('T')[0];
   });
   const [comparison, setComparison] = useState(null);
-  const [visibleColumns, setVisibleColumns] = useState({
-    asin: true,
-    productName: true,
-    category: true,
-    packSize: true,
-    channel: true,
-    available: true,
-    sales30: true,
-    dos: true,
-    instockRate: true,
-    openPos: true,
-    oosDate: true,
-    status: true,
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    const defaults = {
+      asin: true,
+      productName: true,
+      category: true,
+      packSize: true,
+      channel: true,
+      available: true,
+      sales30: true,
+      dos: true,
+      instockRate: true,
+      openPos: true,
+      oosDate: true,
+      status: true,
+    };
+    try {
+      const raw = localStorage.getItem(INVENTORY_VISIBLE_COLUMNS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const next = { ...defaults };
+        Object.keys(next).forEach((k) => {
+          if (typeof parsed[k] === 'boolean') next[k] = parsed[k];
+        });
+        return next;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return defaults;
   });
   const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const selectAllColumnsRef = useRef(null);
+  const [columnOrder, setColumnOrder] = useState(() => {
+    try {
+      const raw = localStorage.getItem(INVENTORY_COLUMN_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+        const known = INVENTORY_COLUMN_OPTIONS.map((c) => c.id);
+        const base = parsed.filter((id) => known.includes(id));
+        known.forEach((id) => {
+          if (!base.includes(id)) base.push(id);
+        });
+        return base;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return INVENTORY_COLUMN_OPTIONS.map((c) => c.id);
+  });
+  const dragColumnIdRef = useRef(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -445,6 +498,80 @@ export default function Inventory() {
     setVisibleColumns((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const columnDefsById = useMemo(() => {
+    const defs = {};
+    INVENTORY_COLUMN_OPTIONS.forEach((c) => { defs[c.id] = c; });
+    return defs;
+  }, []);
+
+  const visibleOrderedColumnIds = useMemo(() => {
+    const known = new Set(INVENTORY_COLUMN_OPTIONS.map((c) => c.id));
+    const orderedKnown = columnOrder.filter((id) => known.has(id));
+    const missing = INVENTORY_COLUMN_OPTIONS.map((c) => c.id).filter((id) => !orderedKnown.includes(id));
+    return [...orderedKnown, ...missing];
+  }, [columnOrder]);
+
+  const allColumnsSelected = useMemo(
+    () => INVENTORY_COLUMN_OPTIONS.every((c) => !!visibleColumns[c.id]),
+    [visibleColumns],
+  );
+  const someColumnsSelected = useMemo(
+    () => INVENTORY_COLUMN_OPTIONS.some((c) => !!visibleColumns[c.id]),
+    [visibleColumns],
+  );
+
+  useEffect(() => {
+    if (!selectAllColumnsRef.current) return;
+    selectAllColumnsRef.current.indeterminate = someColumnsSelected && !allColumnsSelected;
+  }, [someColumnsSelected, allColumnsSelected]);
+
+  const toggleAllColumns = () => {
+    setVisibleColumns((prev) => {
+      const shouldEnableAll = !INVENTORY_COLUMN_OPTIONS.every((c) => !!prev[c.id]);
+      const next = { ...prev };
+      INVENTORY_COLUMN_OPTIONS.forEach((c) => {
+        next[c.id] = shouldEnableAll;
+      });
+      return next;
+    });
+  };
+
+  const onColumnDragStart = (id) => {
+    dragColumnIdRef.current = id;
+  };
+
+  const onColumnDrop = (targetId) => {
+    const sourceId = dragColumnIdRef.current;
+    dragColumnIdRef.current = null;
+    if (!sourceId || sourceId === targetId) return;
+    setColumnOrder((prev) => {
+      const known = INVENTORY_COLUMN_OPTIONS.map((c) => c.id);
+      const base = [...new Set([...(Array.isArray(prev) ? prev : []).filter((id) => known.includes(id)), ...known])];
+      const from = base.indexOf(sourceId);
+      const to = base.indexOf(targetId);
+      if (from === -1 || to === -1) return base;
+      base.splice(from, 1);
+      base.splice(to, 0, sourceId);
+      return base;
+    });
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(INVENTORY_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(columnOrder));
+    } catch {
+      // ignore storage errors
+    }
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(INVENTORY_VISIBLE_COLUMNS_STORAGE_KEY, JSON.stringify(visibleColumns));
+    } catch {
+      // ignore storage errors
+    }
+  }, [visibleColumns]);
+
   const openMetricModal = (metricId) => {
     setMetricModal(metricId);
   };
@@ -759,33 +886,45 @@ export default function Inventory() {
               className="btn-chip"
               onClick={() => setShowColumnPicker((v) => !v)}
             >
-              Columns
+              Other Columns
             </button>
             {showColumnPicker && (
               <div className="column-picker">
-                {[
-                  { id: 'asin', label: 'ASIN' },
-                  { id: 'productName', label: 'Product Name' },
-                  { id: 'category', label: 'Category' },
-                  { id: 'packSize', label: 'Pack Size' },
-                  { id: 'channel', label: 'Sales Channel' },
-                  { id: 'available', label: 'Available' },
-                  { id: 'sales30', label: '30D Sales' },
-                  { id: 'dos', label: 'DOS' },
-                  { id: 'instockRate', label: 'Instock Rate' },
-                  { id: 'openPos', label: 'Open POs' },
-                  { id: 'oosDate', label: 'OOS Date' },
-                  { id: 'status', label: 'Status' },
-                ].map((col) => (
-                  <label key={col.id} className="column-picker-item">
-                    <input
-                      type="checkbox"
-                      checked={visibleColumns[col.id]}
-                      onChange={() => toggleColumn(col.id)}
-                    />
-                    {col.label}
-                  </label>
-                ))}
+                <label key="__select_all__" className="column-picker-item">
+                  <input
+                    ref={selectAllColumnsRef}
+                    type="checkbox"
+                    checked={allColumnsSelected}
+                    onChange={toggleAllColumns}
+                  />
+                  Select all
+                </label>
+                <div style={{ margin: '6px 0 10px', fontSize: 12, opacity: 0.8 }}>
+                  Drag a row to reorder columns.
+                </div>
+                {visibleOrderedColumnIds.map((id) => {
+                  const col = columnDefsById[id];
+                  if (!col) return null;
+                  return (
+                    <label
+                      key={col.id}
+                      className="column-picker-item"
+                      draggable
+                      onDragStart={() => onColumnDragStart(col.id)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => onColumnDrop(col.id)}
+                      style={{ cursor: 'grab' }}
+                      title="Drag to reorder"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!visibleColumns[col.id]}
+                        onChange={() => toggleColumn(col.id)}
+                      />
+                      {col.label}
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -794,60 +933,65 @@ export default function Inventory() {
           <table className="data-table">
             <thead>
               <tr>
-                {visibleColumns.asin && <th>ASIN</th>}
-                {visibleColumns.productName && <th>Product Name</th>}
-                {visibleColumns.category && <th>Category</th>}
-                {visibleColumns.packSize && <th>Pack Size</th>}
-                {visibleColumns.channel && <th>Sales Channel</th>}
-                {visibleColumns.available && <th className="col-num">Available</th>}
-                {visibleColumns.sales30 && <th className="col-num">30D Sales</th>}
-                {visibleColumns.dos && <th className="col-num">DOS</th>}
-                {visibleColumns.instockRate && <th className="col-num">Instock Rate</th>}
-                {visibleColumns.openPos && <th className="col-num">Open POs</th>}
-                {visibleColumns.oosDate && <th>OOS Date</th>}
-                {visibleColumns.status && <th>Status</th>}
+                {visibleOrderedColumnIds.map((id) => {
+                  if (!visibleColumns[id]) return null;
+                  const col = columnDefsById[id];
+                  if (!col) return null;
+                  const numCols = new Set(['available', 'sales30', 'dos', 'instockRate', 'openPos']);
+                  return <th key={id} className={numCols.has(id) ? 'col-num' : ''}>{col.label}</th>;
+                })}
                 <th className="cell-actions" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {pagedRows.map((row) => (
                 <tr key={row.id}>
-                  {visibleColumns.asin && <td><span className="text-secondary">{row.asin}</span></td>}
-                  {visibleColumns.productName && (
-                    <td>
-                      <div className="cell-product">
-                        <div className="table-thumb" aria-hidden>—</div>
-                        <div>
-                          <div>{row.productName}</div>
-                          {!visibleColumns.asin && row.asin && <div className="text-secondary">{row.asin}</div>}
-                        </div>
-                      </div>
-                    </td>
-                  )}
-                  {visibleColumns.category && <td>{row.category}</td>}
-                  {visibleColumns.packSize && <td>{row.packSize}</td>}
-                  {visibleColumns.channel && <td>{row.channel}</td>}
-                  {visibleColumns.available && <td className="col-num">{row.available}</td>}
-                  {visibleColumns.sales30 && (
-                    <td className="col-num">
-                      AED {Math.round(
-                        last30SalesByAsin[row.asin] != null
-                          ? last30SalesByAsin[row.asin]
-                          : Number(row.last30DaysSales) || 0,
-                      ).toLocaleString()}
-                    </td>
-                  )}
-                  {visibleColumns.dos && <td className="col-num">{row.dos}</td>}
-                  {visibleColumns.instockRate && <td className="col-num">{row.instockRate}%</td>}
-                  {visibleColumns.openPos && <td className="col-num">{row.openPos}</td>}
-                  {visibleColumns.oosDate && <td>{row.oosDate ? formatDateDDMonYY(row.oosDate) : row.oosDate}</td>}
-                  {visibleColumns.status && (
-                    <td>
-                      <span className={`badge ${getStatusBadgeClass(row.status)}`}>
-                        {row.status || 'Active'}
-                      </span>
-                    </td>
-                  )}
+                  {visibleOrderedColumnIds.map((id) => {
+                    if (!visibleColumns[id]) return null;
+                    if (id === 'asin') return <td key={id}><span className="text-secondary">{row.asin}</span></td>;
+                    if (id === 'productName') {
+                      return (
+                        <td key={id}>
+                          <div className="cell-product">
+                            <div className="table-thumb" aria-hidden>—</div>
+                            <div>
+                              <div>{row.productName}</div>
+                              {!visibleColumns.asin && row.asin && <div className="text-secondary">{row.asin}</div>}
+                            </div>
+                          </div>
+                        </td>
+                      );
+                    }
+                    if (id === 'category') return <td key={id}>{row.category}</td>;
+                    if (id === 'packSize') return <td key={id}>{row.packSize}</td>;
+                    if (id === 'channel') return <td key={id}>{row.channel}</td>;
+                    if (id === 'available') return <td key={id} className="col-num">{row.available}</td>;
+                    if (id === 'sales30') {
+                      return (
+                        <td key={id} className="col-num">
+                          AED {Math.round(
+                            last30SalesByAsin[row.asin] != null
+                              ? last30SalesByAsin[row.asin]
+                              : Number(row.last30DaysSales) || 0,
+                          ).toLocaleString()}
+                        </td>
+                      );
+                    }
+                    if (id === 'dos') return <td key={id} className="col-num">{row.dos}</td>;
+                    if (id === 'instockRate') return <td key={id} className="col-num">{row.instockRate}%</td>;
+                    if (id === 'openPos') return <td key={id} className="col-num">{row.openPos}</td>;
+                    if (id === 'oosDate') return <td key={id}>{row.oosDate ? formatDateDDMonYY(row.oosDate) : row.oosDate}</td>;
+                    if (id === 'status') {
+                      return (
+                        <td key={id}>
+                          <span className={`badge ${getStatusBadgeClass(row.status)}`}>
+                            {row.status || 'Active'}
+                          </span>
+                        </td>
+                      );
+                    }
+                    return null;
+                  })}
                   <td className="cell-actions">
                     <button
                       type="button"
