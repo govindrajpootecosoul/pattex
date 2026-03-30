@@ -203,6 +203,18 @@ function monthShortFromYearMonth(ym) {
   return MONTHS_SHORT[Math.max(0, Math.min(11, idx))] || '';
 }
 
+/** Normalize any YYYY-M, YYYY-MM, or YYYY-MM-DD prefix to canonical YYYY-MM (for period Set matching). */
+function normalizeYearMonthKey(value) {
+  if (value == null || value === '') return '';
+  const s = String(value).trim();
+  const m = s.match(/^(\d{4})-(\d{1,2})(?:-\d{1,2})?/);
+  if (!m) return '';
+  const y = m[1];
+  const mo = Number(m[2]);
+  if (!y || !Number.isFinite(mo) || mo < 1 || mo > 12) return '';
+  return `${y}-${String(mo).padStart(2, '0')}`;
+}
+
 function parseDateKey(value) {
   if (!value) return '';
   // Handles both Date objects and ISO/date-like strings.
@@ -425,6 +437,49 @@ function getPeriodDaysOrWeeks(dateFilterType) {
   }
 
   return null;
+}
+
+/**
+ * One YYYY-MM-DD buybox snapshot for Executive Summary PO cards, aligned with dateFilterType
+ * (uses T-3 anchored months when anchorDate is set — same idea as /dashboard/revenue).
+ */
+function pickBuyboxSnapshotDateKeyForExecutive(allDateKeys, dateFilterType, customRangeStart, customRangeEnd, anchorDate) {
+  const sortedKeys = [...new Set(allDateKeys.filter(Boolean))].sort();
+  if (!sortedKeys.length) return '';
+
+  if (!dateFilterType) {
+    return sortedKeys[sortedKeys.length - 1];
+  }
+
+  const dayWeek = getPeriodDaysOrWeeks(dateFilterType);
+  const periods = dayWeek || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
+  if (!periods?.current?.length) {
+    return sortedKeys[sortedKeys.length - 1];
+  }
+
+  if (dayWeek) {
+    const want = new Set(periods.current);
+    const exact = sortedKeys.filter((k) => want.has(k));
+    if (exact.length) return exact[exact.length - 1];
+    const lastWanted = [...periods.current].sort().slice(-1)[0];
+    const notAfter = sortedKeys.filter((k) => k <= lastWanted);
+    return notAfter.length ? notAfter[notAfter.length - 1] : sortedKeys[sortedKeys.length - 1];
+  }
+
+  const monthSet = new Set(
+    periods.current.map((ym) => String(ym).slice(0, 7)).filter((s) => /^\d{4}-\d{2}$/.test(s)),
+  );
+  const inMonths = sortedKeys.filter((k) => monthSet.has(k.slice(0, 7)));
+  if (inMonths.length) return inMonths[inMonths.length - 1];
+
+  const sortedYm = [...monthSet].sort();
+  const lastYm = sortedYm[sortedYm.length - 1] || '';
+  if (lastYm) {
+    const notAfter = sortedKeys.filter((k) => k.slice(0, 7) <= lastYm);
+    return notAfter.length ? notAfter[notAfter.length - 1] : sortedKeys[sortedKeys.length - 1];
+  }
+
+  return sortedKeys[sortedKeys.length - 1];
 }
 
 function aggregateRevenueRows(rows) {
@@ -655,7 +710,7 @@ router.get('/sales-channels', async (req, res) => {
 
 router.get('/executive-summary', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'executive-summary');
+    const cacheKey = buildDashboardCacheKey(req, 'executive-summary:v2');
     const ttlSeconds = 300; // 5 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -666,11 +721,14 @@ router.get('/executive-summary', async (req, res) => {
 
     const salesChannel = String(req.query.salesChannel || '').trim();
     const buyboxChannelMatch = buildSalesChannelOrFilter(salesChannel) || {};
+    const dateFilterType = String(req.query.dateFilterType || '').trim();
+    const customRangeStart = String(req.query.customRangeStart || '').trim();
+    const customRangeEnd = String(req.query.customRangeEnd || '').trim();
 
     // Use the latest snapshot date across revenue + buybox datasets.
     // IMPORTANT: Do NOT rely on `sort({ Date: -1 })` because Date is often a string
     // like "13-Mar-2026", which doesn't sort chronologically.
-    const [revenueDateKey, buyboxDateKey] = await Promise.all([
+    const [revenueDateKey, buyboxDateKeys] = await Promise.all([
       (async () => {
         const docs = await req.companyModels.Revenue.find({}, { Date: 1, date: 1, DATE: 1 }).lean();
         let best = '';
@@ -682,14 +740,36 @@ router.get('/executive-summary', async (req, res) => {
       })(),
       (async () => {
         const docs = await req.companyModels.Buybox.find(buyboxChannelMatch, { Date: 1, date: 1, DATE: 1 }).lean();
-        let best = '';
+        const keys = [];
         docs.forEach((d) => {
           const key = parseDateKey(d?.Date || d?.date || d?.DATE);
-          if (key && (!best || key > best)) best = key;
+          if (key) keys.push(key);
         });
-        return best;
+        return keys;
       })(),
     ]);
+
+    const buyboxDateKey = buyboxDateKeys.length
+      ? [...new Set(buyboxDateKeys)].sort().slice(-1)[0]
+      : '';
+
+    let anchorDateForExec = null;
+    if (salesChannel && dateFilterType && dateFilterType !== 'CUSTOM_RANGE' && buyboxDateKey) {
+      const ad = new Date(`${buyboxDateKey}T00:00:00.000Z`);
+      if (!Number.isNaN(ad.getTime())) {
+        ad.setDate(ad.getDate() - 3);
+        anchorDateForExec = ad;
+      }
+    }
+
+    const buyboxDateKeyEffective =
+      pickBuyboxSnapshotDateKeyForExecutive(
+        buyboxDateKeys,
+        dateFilterType,
+        customRangeStart,
+        customRangeEnd,
+        anchorDateForExec,
+      ) || buyboxDateKey;
 
     const dataUpdated =
       [revenueDateKey, buyboxDateKey].filter(Boolean).sort().slice(-1)[0]
@@ -776,16 +856,16 @@ router.get('/executive-summary', async (req, res) => {
         },
       ],
     };
-    // Match Buybox page logic: use the latest snapshot date (optionally per Sales Channel),
-    // then compute "no buybox" as any Current Owner that is NOT Amazon.ae on that same date.
-    const buyboxDateKeyEffective = buyboxDateKey || dataUpdated;
+    // Match Buybox page logic: one snapshot day (per date filter + channel), then compute
+    // "no buybox" as any Current Owner that is NOT Amazon.ae on that same date.
+    const buyboxSnapshotDate = buyboxDateKeyEffective || buyboxDateKey || dataUpdated;
 
-    // ASIN lists for the latest snapshot in buyboxes.
+    // ASIN lists for the selected snapshot in buyboxes.
     const openPODetailsPromise = (async () => {
       // From pattex.buyboxes, column "Open POs" > 0 on latest date.
       const match = {
         ...buyboxChannelMatch,
-        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxDateKeyEffective),
+        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxSnapshotDate),
         $expr: {
           $gt: [
             openPoExpr,
@@ -831,7 +911,7 @@ router.get('/executive-summary', async (req, res) => {
       // From pattex.buyboxes, column "PO_received_Units" > 0 on latest date.
       const match = {
         ...buyboxChannelMatch,
-        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxDateKeyEffective),
+        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxSnapshotDate),
         $expr: {
           $gt: [
             poReceivedUnitsExpr,
@@ -874,7 +954,7 @@ router.get('/executive-summary', async (req, res) => {
     })();
 
     const skuNoBuyboxDetailsPromise = (async () => {
-      // Distinct ASINs from buyboxes on latest date where Current Owner != Amazon.ae (and not blank).
+      // Distinct ASINs from buyboxes on selected snapshot where Current Owner != Amazon.ae (and not blank).
       const ownerLowerExpr = {
         $toLower: {
           $toString: {
@@ -884,7 +964,7 @@ router.get('/executive-summary', async (req, res) => {
       };
       const match = {
         ...buyboxChannelMatch,
-        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxDateKeyEffective),
+        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxSnapshotDate),
         $expr: {
           $and: [
             {
@@ -943,6 +1023,8 @@ router.get('/executive-summary', async (req, res) => {
     const payload = {
       ...executiveSummary,
       dataUpdated,
+      buyboxSnapshotDate,
+      dateFilterType: dateFilterType || null,
       poSummary: {
         openPOs: openPODetails.length,
         poReceived: poReceivedDetails.length,
@@ -1072,7 +1154,7 @@ router.get('/key-performance-metrics', async (req, res) => {
 router.get('/revenue', async (req, res) => {
   try {
     // Bump cache key version so channel/date fixes take effect immediately.
-    const cacheKey = buildDashboardCacheKey(req, 'revenue:v4');
+    const cacheKey = buildDashboardCacheKey(req, 'revenue:v6');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -1191,8 +1273,8 @@ router.get('/revenue', async (req, res) => {
         const snapshotDateKey = parseDateKey(doc.Date || doc.date || doc.DATE);
         const reportDate = snapshotDateKey || '';
         const ymRaw = doc?.year_month != null ? String(doc.year_month).trim() : '';
-        const ym = /^\d{4}-\d{2}$/.test(ymRaw) ? ymRaw : '';
-        const reportMonth = snapshotDateKey ? snapshotDateKey.slice(0, 7) : ym;
+        const ymFromYearMonth = normalizeYearMonthKey(ymRaw);
+        const reportMonth = normalizeYearMonthKey(snapshotDateKey) || ymFromYearMonth;
         const asin = revenueAsinFromDoc(doc);
         const productName = revenueProductNameFromDoc(doc);
         const salesChannel = revenueChannelFromDoc(doc);
@@ -1273,7 +1355,7 @@ router.get('/revenue', async (req, res) => {
 
     if (dateFilterType) {
       const dayWeekPeriods = getPeriodDaysOrWeeks(dateFilterType);
-      const periods = dayWeekPeriods || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd);
+      const periods = dayWeekPeriods || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDateForPeriods);
       if (periods) {
         periodsOut = { current: periods.current, comparison: periods.comparison };
         periodLabelsOut = periods.labels || null;
@@ -1281,8 +1363,14 @@ router.get('/revenue', async (req, res) => {
         const currentSet = new Set(periods.current);
         const comparisonSet = new Set(periods.comparison);
         const keyField = dayWeekPeriods ? 'reportDate' : 'reportMonth';
-        const currentRows = rows.filter((r) => r[keyField] && currentSet.has(r[keyField]));
-        const comparisonRows = rows.filter((r) => r[keyField] && comparisonSet.has(r[keyField]));
+        const currentRows = rows.filter((r) => {
+          const key = dayWeekPeriods ? r[keyField] : normalizeYearMonthKey(r[keyField]) || r[keyField];
+          return key && currentSet.has(key);
+        });
+        const comparisonRows = rows.filter((r) => {
+          const key = dayWeekPeriods ? r[keyField] : normalizeYearMonthKey(r[keyField]) || r[keyField];
+          return key && comparisonSet.has(key);
+        });
         if (includePeriods) {
           currentRowsOut = currentRows;
           comparisonRowsOut = comparisonRows;
@@ -1317,13 +1405,19 @@ router.get('/revenue', async (req, res) => {
       rows,
       total: rows.length,
       updatedAt,
-      ...(includePeriods && periodsOut && currentRowsOut && comparisonRowsOut && {
+      // Always send resolved periods when a date filter is active so the UI can filter rows
+      // with the same anchor the server used (avoids empty tables from client/server mismatch).
+      ...(periodsOut && {
         periods: periodsOut,
         periodType: periodTypeOut,
-        periodLabels: periodLabelsOut,
-        currentRows: currentRowsOut,
-        comparisonRows: comparisonRowsOut,
+        ...(periodLabelsOut && { periodLabels: periodLabelsOut }),
       }),
+      ...(includePeriods && periodsOut
+        ? {
+            currentRows: Array.isArray(currentRowsOut) ? currentRowsOut : [],
+            comparisonRows: Array.isArray(comparisonRowsOut) ? comparisonRowsOut : [],
+          }
+        : {}),
       ...(comparison && { comparison }),
     };
 
@@ -1341,7 +1435,7 @@ router.get('/revenue', async (req, res) => {
 // returns KPI cards + combo chart data (line vs bar) similar to Amazon.
 router.get('/marketing', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'marketing');
+    const cacheKey = buildDashboardCacheKey(req, 'marketing:v2');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -1469,11 +1563,49 @@ router.get('/marketing', async (req, res) => {
     // Do NOT apply them to the initial Mongo query, otherwise campaign selections would
     // incorrectly change the top KPIs / SKU view and can also hide data unexpectedly.
 
+    // Anchor month periods to latest Marketing data for the selected channel (matches /revenue behavior).
+    let marketingAnchorDate = null;
+    const anchorChannel = String(salesChannelFilter || campaignSalesChannelFilter || '').trim();
+    if (anchorChannel && (dateFilterType || campaignDateRange)) {
+      const chRe = exactRegex(anchorChannel);
+      const anchorChFilter = {
+        $or: [
+          { 'Sales Channel': { $regex: chRe } },
+          { sales_channel: { $regex: chRe } },
+          { salesChannel: { $regex: chRe } },
+          { channel: { $regex: chRe } },
+        ],
+      };
+      try {
+        const mDateDocs = await req.companyModels.Marketing.find(anchorChFilter, { Date: 1, date: 1, DATE: 1 })
+          .lean();
+        let best = '';
+        mDateDocs.forEach((d) => {
+          const key = parseDateKey(d?.Date || d?.date || d?.DATE);
+          if (key && (!best || key > best)) best = key;
+        });
+        if (best) {
+          const ad = new Date(`${best}T00:00:00.000Z`);
+          if (!Number.isNaN(ad.getTime())) {
+            ad.setDate(ad.getDate() - 3);
+            marketingAnchorDate = ad;
+          }
+        }
+      } catch {
+        // ignore anchor probe errors
+      }
+    }
+
+    const mongoFilterWithoutDate = JSON.parse(JSON.stringify(mongoFilter));
+
     // Date prefilter: current + comparison months (or campaignDateRange months when provided).
-    // NOTE: If this prefilter yields 0 docs, we fall back to "no date prefilter"
-    // to avoid hiding real data when the dataset is behind the current period.
-    const basePeriods = dateFilterType ? getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd) : null;
-    const campaignPeriodsForQuery = campaignDateRange ? getPeriodMonths(campaignDateRange, '', '') : null;
+    // If this prefilter yields 0 docs, we retry without the date clause (see find below).
+    const basePeriods = dateFilterType
+      ? getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, marketingAnchorDate)
+      : null;
+    const campaignPeriodsForQuery = campaignDateRange
+      ? getPeriodMonths(campaignDateRange, '', '', marketingAnchorDate)
+      : null;
     const periodsForQuery = campaignPeriodsForQuery || basePeriods;
 
     if (periodsForQuery) {
@@ -1645,6 +1777,10 @@ router.get('/marketing', async (req, res) => {
 
     let docs = await req.companyModels.Marketing.find(mongoFilter, projection).lean();
 
+    if ((!docs || docs.length === 0) && periodsForQuery && Object.keys(mongoFilterWithoutDate).length > 0) {
+      docs = await req.companyModels.Marketing.find(mongoFilterWithoutDate, projection).lean();
+    }
+
     if (!docs || docs.length === 0) {
       return res.json({
         title: 'Marketing',
@@ -1676,7 +1812,9 @@ router.get('/marketing', async (req, res) => {
     });
     const salesChannelOptions = Array.from(salesChannelSet.values()).sort((a, b) => String(a).localeCompare(String(b)));
 
-    let periods = dateFilterType ? getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd) : null;
+    let periods = dateFilterType
+      ? getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, marketingAnchorDate)
+      : null;
     let currentSet = periods ? new Set(periods.current) : null;
     let comparisonSet = periods ? new Set(periods.comparison) : null;
 
@@ -1779,7 +1917,7 @@ router.get('/marketing', async (req, res) => {
     const docsForCampaignBase = campaignSeed.filter(applyCampaignFilters);
 
     const campaignPeriods = campaignDateRange
-      ? getPeriodMonths(campaignDateRange, '', '')
+      ? getPeriodMonths(campaignDateRange, '', '', marketingAnchorDate)
       : periods;
     const campaignCurrentSet = campaignPeriods ? new Set(campaignPeriods.current) : null;
 

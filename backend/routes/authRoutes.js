@@ -2,6 +2,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { protect } from '../middleware/auth.js';
+import Cache from '../utils/cache.js';
 
 const router = express.Router();
 
@@ -71,6 +72,17 @@ router.post('/login', async (req, res) => {
       status: user.status,
       token,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Server error' });
+  }
+});
+
+// POST /api/auth/logout — invalidate server-side dashboard cache for this tenant
+router.post('/logout', protect, async (req, res) => {
+  try {
+    const dbName = req.user?.databaseName;
+    const removed = await Cache.invalidateDashboardForDatabase(dbName);
+    res.json({ message: 'Logged out', cacheKeysRemoved: removed });
   } catch (error) {
     res.status(500).json({ message: error.message || 'Server error' });
   }

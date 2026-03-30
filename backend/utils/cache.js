@@ -86,6 +86,11 @@ export function buildDashboardCacheKey(req, routeName) {
   return `pattex:v1:dashboard:${db}:${routeName}:${queryPart}`;
 }
 
+/** Escape Redis SCAN glob metacharacters so databaseName cannot widen the match. */
+function escapeRedisGlobSegment(segment) {
+  return String(segment).replace(/\\/g, '\\\\').replace(/\*/g, '\\*').replace(/\?/g, '\\?').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+}
+
 export default class Cache {
   static async get(key) {
     try {
@@ -122,6 +127,32 @@ export default class Cache {
     // Cache only non-undefined responses.
     if (fresh !== undefined) await this.set(key, fresh, ttlSeconds);
     return fresh;
+  }
+
+  /**
+   * Remove all dashboard cache entries for a tenant (databaseName).
+   * Used on logout so the next session does not reuse stale aggregated payloads.
+   */
+  static async invalidateDashboardForDatabase(databaseName) {
+    if (!REDIS_ENABLED || databaseName == null || String(databaseName).trim() === '') return 0;
+    try {
+      const ok = await ensureRedisReady();
+      if (!ok) return 0;
+      const safeDb = escapeRedisGlobSegment(String(databaseName).trim());
+      const pattern = `pattex:v1:dashboard:${safeDb}:*`;
+      let cursor = '0';
+      let removed = 0;
+      do {
+        const [next, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+        cursor = next;
+        if (keys.length > 0) {
+          removed += await redis.del(...keys);
+        }
+      } while (cursor !== '0');
+      return removed;
+    } catch (_) {
+      return 0;
+    }
   }
 }
 
