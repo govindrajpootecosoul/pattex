@@ -28,12 +28,23 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function normalizeChannelValue(raw) {
+  // Some sheet imports store spaces as NBSP or inconsistent whitespace.
+  // We normalize so "Seller Central" matches "Seller\u00A0Central" and multiple spaces.
+  return String(raw ?? '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function buildSalesChannelOrFilter(raw) {
-  const salesChannel = String(raw || '').trim();
+  const salesChannel = normalizeChannelValue(raw);
   if (!salesChannel) return null;
   // Match tolerant of casing + accidental whitespace in stored values.
   // Example: "Seller Central" should match " seller central " in DB.
-  const re = new RegExp(`^\\s*${escapeRegExp(salesChannel)}\\s*$`, 'i');
+  const tokens = salesChannel.split(' ').filter(Boolean);
+  const pattern = tokens.map(escapeRegExp).join('\\s+');
+  const re = new RegExp(`^\\s*${pattern}\\s*$`, 'i');
   return {
     $or: [
       { 'Sales Channel': { $regex: re } },
@@ -356,11 +367,12 @@ function dateList(startDate, endDate) {
   return list;
 }
 
-function getPeriodDaysOrWeeks(dateFilterType) {
-  // Data arrives with a T-3 lag; treat "current" as today-3 days.
-  const now = new Date();
+function getPeriodDaysOrWeeks(dateFilterType, anchorDate) {
+  // Data usually arrives with a T-3 lag; treat "current" as today-3 days by default.
+  // When an anchorDate is provided, we treat that anchor as the effective "current" date.
+  const now = anchorDate instanceof Date ? new Date(anchorDate) : new Date();
   now.setHours(0, 0, 0, 0);
-  now.setDate(now.getDate() - 3);
+  if (!(anchorDate instanceof Date)) now.setDate(now.getDate() - 3);
 
   if (dateFilterType === 'CURRENT_DAY') {
     const current = [toYmd(now)];
@@ -1047,11 +1059,12 @@ router.get('/executive-summary', async (req, res) => {
 });
 
 // Key Performance Metrics (Executive Summary KPI table)
-// - Targets: from `targets` collection (fields like Year, Month, Overall Sales, Ad Spend, Sales Channel)
-// - Actual (MTD): from `revenues` collection aggregated for current month (with T-3 lag)
+// - Targets: from `targets` (Year/Month + optional Sales Channel), aligned to the active period month(s)
+// - Actuals: from `revenues`, scoped to the same dateFilterType + sales channel as `/dashboard/revenue`
+//   (including latest-date anchor + T-3 for months, Mongo date clauses for day/week, JS channel fallback)
 router.get('/key-performance-metrics', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'key-performance-metrics');
+    const cacheKey = buildDashboardCacheKey(req, 'key-performance-metrics:v2');
     const ttlSeconds = 300; // 5 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -1061,16 +1074,191 @@ router.get('/key-performance-metrics', async (req, res) => {
     }
 
     const salesChannel = String(req.query.salesChannel || '').trim();
-    const ym = currentYearMonthKey(); // YYYY-MM using effective now (today-3)
-    const year = parseInt(ym.slice(0, 4), 10);
-    const monthShort = monthShortFromYearMonth(ym); // e.g. "Jun"
+    const dateFilterTypeQ = String(req.query.dateFilterType || '').trim();
+    const customRangeStartQ = String(req.query.customRangeStart || '').trim();
+    const customRangeEndQ = String(req.query.customRangeEnd || '').trim();
 
-    // Targets (current month) — allow channel filter if provided
+    const docFilter = buildSalesChannelOrFilter(salesChannel) || {};
+
+    let anchorDateForDays = null; // used for day/week filters
+    let anchorDateForMonths = null; // used for month filters (keeps T-3 style anchoring)
+    if (salesChannel && dateFilterTypeQ && dateFilterTypeQ !== 'CUSTOM_RANGE') {
+      const dateDocs = await req.companyModels.Revenue.find(docFilter, { Date: 1, date: 1, DATE: 1 }).lean();
+      let best = '';
+      dateDocs.forEach((d) => {
+        const key = parseDateKey(d?.Date || d?.date || d?.DATE);
+        if (key && (!best || key > best)) best = key;
+      });
+      if (best) {
+        // Build a *local* date object from the YYYY-MM-DD key so `toYmd()` matches DB date keys
+        // regardless of server timezone.
+        const [yy, mo, dd] = String(best)
+          .split('-')
+          .map((x) => parseInt(x, 10));
+        const d = yy && mo && dd ? new Date(yy, mo - 1, dd) : null;
+        if (d && !Number.isNaN(d.getTime())) {
+          anchorDateForDays = d;
+          const dm = new Date(d);
+          // Align with the T-3 window used elsewhere for month filters.
+          dm.setDate(dm.getDate() - 3);
+          anchorDateForMonths = dm;
+        }
+      }
+    }
+
+    let mongoDateFilter = {};
+    if (dateFilterTypeQ) {
+      const dayWeekPeriodsPre = getPeriodDaysOrWeeks(dateFilterTypeQ, anchorDateForDays);
+      if (dayWeekPeriodsPre) {
+        const allowedDays = [...dayWeekPeriodsPre.current, ...dayWeekPeriodsPre.comparison];
+        const clauses = [];
+        allowedDays.forEach((dayKey) => {
+          const q = dateMatchQueryAny(['Date', 'date', 'DATE'], dayKey);
+          if (q?.$or?.length) clauses.push(...q.$or);
+        });
+        if (clauses.length) mongoDateFilter = { $or: clauses };
+      } else {
+        const periodsPre = getPeriodMonths(dateFilterTypeQ, customRangeStartQ, customRangeEndQ, anchorDateForMonths);
+        if (periodsPre) {
+          const allowedMonths = [...periodsPre.current, ...periodsPre.comparison];
+          const monthOr = [];
+          allowedMonths.forEach((ym) => {
+            if (!ym || typeof ym !== 'string' || ym.length < 7) return;
+            const year4 = parseInt(ym.slice(0, 4), 10);
+            const ymShort = monthShortFromYearMonth(ym);
+            const yearYY = String(year4).slice(-2);
+            const isoMonthPrefix = `${ym}-`;
+            monthOr.push({ Date: { $regex: `^\\s*${isoMonthPrefix}` } });
+            if (ymShort) {
+              monthOr.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort}-${year4}`, 'i') } });
+              monthOr.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort}-${yearYY}`, 'i') } });
+            }
+            const start = new Date(`${ym}-01T00:00:00.000Z`);
+            if (!Number.isNaN(start.getTime())) {
+              const end = new Date(start);
+              end.setUTCMonth(end.getUTCMonth() + 1);
+              monthOr.push({ Date: { $gte: start, $lt: end } });
+            }
+          });
+          monthOr.push({
+            $and: [
+              { year_month: { $in: allowedMonths } },
+              { year_month: { $regex: /^\d{4}-\d{2}$/ } },
+            ],
+          });
+          if (monthOr.length) mongoDateFilter = { $or: monthOr };
+        }
+      }
+    }
+    if (dateFilterTypeQ && !Object.keys(mongoDateFilter).length) {
+      const ym0 = currentYearMonthKey();
+      const year0 = parseInt(ym0.slice(0, 4), 10);
+      const ymShort0 = monthShortFromYearMonth(ym0);
+      const yearYY0 = String(year0).slice(-2);
+      const isoMonthPrefix0 = `${ym0}-`;
+      const monthOr0 = [{ Date: { $regex: `^\\s*${isoMonthPrefix0}` } }];
+      if (ymShort0) {
+        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${year0}`, 'i') } });
+        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${yearYY0}`, 'i') } });
+      }
+      const start0 = new Date(`${ym0}-01T00:00:00.000Z`);
+      if (!Number.isNaN(start0.getTime())) {
+        const end0 = new Date(start0);
+        end0.setUTCMonth(end0.getUTCMonth() + 1);
+        monthOr0.push({ Date: { $gte: start0, $lt: end0 } });
+      }
+      monthOr0.push({
+        $and: [
+          { year_month: { $in: [ym0] } },
+          { year_month: { $regex: /^\d{4}-\d{2}$/ } },
+        ],
+      });
+      mongoDateFilter = { $or: monthOr0 };
+    }
+    if (!dateFilterTypeQ) {
+      const ym0 = currentYearMonthKey();
+      const year0 = parseInt(ym0.slice(0, 4), 10);
+      const ymShort0 = monthShortFromYearMonth(ym0);
+      const yearYY0 = String(year0).slice(-2);
+      const isoMonthPrefix0 = `${ym0}-`;
+      const monthOr0 = [{ Date: { $regex: `^\\s*${isoMonthPrefix0}` } }];
+      if (ymShort0) {
+        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${year0}`, 'i') } });
+        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${yearYY0}`, 'i') } });
+      }
+      const start0 = new Date(`${ym0}-01T00:00:00.000Z`);
+      if (!Number.isNaN(start0.getTime())) {
+        const end0 = new Date(start0);
+        end0.setUTCMonth(end0.getUTCMonth() + 1);
+        monthOr0.push({ Date: { $gte: start0, $lt: end0 } });
+      }
+      monthOr0.push({
+        $and: [
+          { year_month: { $in: [ym0] } },
+          { year_month: { $regex: /^\d{4}-\d{2}$/ } },
+        ],
+      });
+      mongoDateFilter = { $or: monthOr0 };
+    }
+
+    const docsFilter =
+      Object.keys(docFilter).length && Object.keys(mongoDateFilter).length
+        ? { $and: [docFilter, mongoDateFilter] }
+        : Object.keys(mongoDateFilter).length
+          ? mongoDateFilter
+          : docFilter;
+
+    let revDocs = await req.companyModels.Revenue.find(docsFilter).lean();
+
+    if (!revDocs.length && salesChannel) {
+      const dateOnlyFilter = Object.keys(mongoDateFilter).length ? mongoDateFilter : {};
+      const altDocs = await req.companyModels.Revenue.find(dateOnlyFilter).lean();
+      const wanted = normalizeChannelValue(salesChannel).toLowerCase();
+      revDocs = altDocs.filter((d) => normalizeChannelValue(revenueChannelFromDoc(d)).toLowerCase() === wanted);
+    }
+
+    const dayWeekPeriods = dateFilterTypeQ ? getPeriodDaysOrWeeks(dateFilterTypeQ, anchorDateForDays) : null;
+    let monthPeriods = dayWeekPeriods
+      ? null
+      : dateFilterTypeQ
+        ? getPeriodMonths(dateFilterTypeQ, customRangeStartQ, customRangeEndQ, anchorDateForMonths)
+        : { current: [currentYearMonthKey()], comparison: [] };
+    if (dateFilterTypeQ && !dayWeekPeriods && !monthPeriods) {
+      monthPeriods = { current: [currentYearMonthKey()], comparison: [] };
+    }
+
+    let targetYm = currentYearMonthKey();
+    if (dayWeekPeriods?.current?.[0]) {
+      targetYm = dayWeekPeriods.current[0].slice(0, 7);
+    } else if (monthPeriods?.current?.[0]) {
+      targetYm = String(monthPeriods.current[0]).slice(0, 7);
+    }
+
+    const targetMonthKeys = (() => {
+      if (monthPeriods?.current?.length) {
+        return monthPeriods.current
+          .map((k) => String(k).slice(0, 7))
+          .filter((s) => /^\d{4}-\d{2}$/.test(s));
+      }
+      if (dayWeekPeriods?.current?.length) {
+        return [targetYm];
+      }
+      return [targetYm];
+    })();
+
+    const monthClauses = targetMonthKeys.map((ymKey) => {
+      const y = parseInt(ymKey.slice(0, 4), 10);
+      const ms = monthShortFromYearMonth(ymKey);
+      return {
+        $and: [
+          { $or: [{ Year: y }, { year: y }] },
+          { $or: [{ Month: ms }, { month: ms }] },
+        ],
+      };
+    });
+
     const targetFilter = {
-      $and: [
-        { $or: [{ Year: year }, { year }] },
-        { $or: [{ Month: monthShort }, { month: monthShort }] },
-      ],
+      $and: [monthClauses.length === 1 ? monthClauses[0] : { $or: monthClauses }],
     };
     if (salesChannel) {
       const scOr = buildSalesChannelOrFilter(salesChannel);
@@ -1081,38 +1269,22 @@ router.get('/key-performance-metrics', async (req, res) => {
     const targetOverallRevenue = targetDocs.reduce((s, d) => s + parseNum(d?.['Overall Sales'] ?? d?.overallSales ?? d?.overall_sales), 0);
     const targetOverallSpend = targetDocs.reduce((s, d) => s + parseNum(d?.['Ad Spend'] ?? d?.adSpend ?? d?.ad_spend), 0);
 
-    // Actual MTD (current month) from revenues
-    // Avoid loading the entire `revenues` collection into memory.
-    const isoMonthPrefix = `${ym}-`;
-    const yearYY = String(year).slice(-2);
-    const dateOrPatterns = [
-      // ISO-like: "YYYY-MM-DD..." (starts with `${ym}-`)
-      { Date: { $regex: `^${isoMonthPrefix}` } },
-    ];
-
-    if (monthShort) {
-      // DD-MMM-YYYY (e.g. "13-Mar-2026")
-      dateOrPatterns.push({ Date: { $regex: new RegExp(`^\\d{1,2}-${monthShort}-${year}`, 'i') } });
-      // DD-MMM-YY (e.g. "13-Mar-26")
-      dateOrPatterns.push({ Date: { $regex: new RegExp(`^\\d{1,2}-${monthShort}-${yearYY}`, 'i') } });
-    }
-
-    const dateFilter = dateOrPatterns.length === 1 ? dateOrPatterns[0] : { $or: dateOrPatterns };
-    const salesChannelFilterForActuals = buildSalesChannelOrFilter(salesChannel) || {};
-
-    const revFilter = salesChannelFilterForActuals
-      ? { $and: [dateFilter, salesChannelFilterForActuals] }
-      : dateFilter;
-
-    const revDocs = await req.companyModels.Revenue.find(revFilter).lean();
+    const currentPeriodSet = new Set(
+      dayWeekPeriods ? dayWeekPeriods.current : monthPeriods?.current || [targetYm],
+    );
 
     const actualRows = revDocs.filter((d) => {
-      const dateKey = parseDateKey(d?.Date || d?.date || d?.DATE);
-      if (!dateKey) return false;
-      if (dateKey.slice(0, 7) !== ym) return false;
-      // DB query already strictly filtered by sales channel natively via buildSalesChannelOrFilter
-      return true;
+      const snapshotDateKey = parseDateKey(d?.Date || d?.date || d?.DATE);
+      if (dayWeekPeriods) {
+        return Boolean(snapshotDateKey && currentPeriodSet.has(snapshotDateKey));
+      }
+      const ymFromDate = normalizeYearMonthKey(snapshotDateKey);
+      const ymRaw = d?.year_month != null ? String(d.year_month).trim() : '';
+      const ymFromField = normalizeYearMonthKey(ymRaw);
+      const reportMonth = ymFromDate || ymFromField;
+      return Boolean(reportMonth && currentPeriodSet.has(reportMonth));
     });
+
     const actualOverallRevenue = actualRows.reduce((s, d) => s + parseNum(d?.total_sales ?? d?.totalSales ?? d?.['Overall Sales']), 0);
     const actualOverallSpend = actualRows.reduce((s, d) => s + parseNum(d?.ads_spend ?? d?.adSpend ?? d?.['Ad Spend']), 0);
 
@@ -1123,11 +1295,50 @@ router.get('/key-performance-metrics', async (req, res) => {
       return ((a - t) / t) * 100;
     };
 
+    const year = parseInt(targetYm.slice(0, 4), 10);
+    const ym = targetYm;
+    const monthShort = monthShortFromYearMonth(ym);
+
+    let kpiPeriodLabel = 'Current month';
+    if (!dateFilterTypeQ) {
+      const [yy, mm] = targetYm.split('-').map(Number);
+      kpiPeriodLabel =
+        yy && mm
+          ? new Date(yy, mm - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' })
+          : 'Current month';
+    } else if (dateFilterTypeQ === 'CURRENT_DAY') kpiPeriodLabel = 'Current day';
+    else if (dateFilterTypeQ === 'PREVIOUS_DAY') kpiPeriodLabel = 'Previous day';
+    else if (dateFilterTypeQ === 'CURRENT_WEEK') kpiPeriodLabel = 'Current week';
+    else if (dateFilterTypeQ === 'PREVIOUS_WEEK') kpiPeriodLabel = 'Previous week';
+    else if (dateFilterTypeQ === 'CUSTOM_RANGE') kpiPeriodLabel = 'Custom range';
+    else if (dateFilterTypeQ === 'CURRENT_MONTH' || dateFilterTypeQ === 'PREVIOUS_MONTH') {
+      const [yy, mm] = targetYm.split('-').map(Number);
+      kpiPeriodLabel =
+        yy && mm
+          ? new Date(yy, mm - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' })
+          : dateFilterTypeQ === 'CURRENT_MONTH'
+            ? 'Current month'
+            : 'Previous month';
+    }
+
+    let actualColumnHeader = 'Actual (MTD)';
+    if (dayWeekPeriods?.periodType === 'DAY' && dayWeekPeriods.current?.length === 1) {
+      actualColumnHeader = `Actual (${toDDMonYY(dayWeekPeriods.current[0])})`;
+    } else if (dayWeekPeriods?.periodType === 'WEEK' && dayWeekPeriods.labels?.currentLabel) {
+      actualColumnHeader = `Actual (${dayWeekPeriods.labels.currentLabel})`;
+    }
+
+    const kpiHeader = `Key Performance Metrics (${kpiPeriodLabel})${salesChannel ? ` — ${salesChannel}` : ''}`;
+
     const payload = {
       year,
       month: monthShort,
       yearMonth: ym,
       salesChannel: salesChannel || '',
+      dateFilterType: dateFilterTypeQ || '',
+      kpiHeader,
+      actualColumnHeader,
+      periodLabels: dayWeekPeriods?.labels || null,
       targets: {
         overallRevenue: targetOverallRevenue,
         overallSpend: targetOverallSpend,
@@ -1173,8 +1384,10 @@ router.get('/revenue', async (req, res) => {
     const customRangeEndQ = req.query.customRangeEnd || '';
 
     // Anchor "current" periods to the latest available date for the selected Sales Channel.
-    // This fixes cases like Vendor Central where the most recent data may be months behind Seller Central.
-    let anchorDateForPeriods = null;
+    // For day/week filters we anchor "current" to the latest revenue date directly.
+    // For month filters we keep existing T-3 anchoring behavior.
+    let anchorDateForDays = null;
+    let anchorDateForMonths = null;
     if (salesChannelFilter && dateFilterTypeQ && dateFilterTypeQ !== 'CUSTOM_RANGE') {
       const dateDocs = await req.companyModels.Revenue.find(docFilter, { Date: 1, date: 1, DATE: 1 }).lean();
       let best = '';
@@ -1183,18 +1396,25 @@ router.get('/revenue', async (req, res) => {
         if (key && (!best || key > best)) best = key;
       });
       if (best) {
-        const d = new Date(`${best}T00:00:00.000Z`);
-        if (!Number.isNaN(d.getTime())) {
-          // Align with the T-3 window used elsewhere.
-          d.setDate(d.getDate() - 3);
-          anchorDateForPeriods = d;
+        // Build a *local* date object from the YYYY-MM-DD key so `toYmd()` matches DB date keys
+        // regardless of server timezone.
+        const [yy, mo, dd] = String(best)
+          .split('-')
+          .map((x) => parseInt(x, 10));
+        const d = yy && mo && dd ? new Date(yy, mo - 1, dd) : null;
+        if (d && !Number.isNaN(d.getTime())) {
+          anchorDateForDays = d;
+          const dm = new Date(d);
+          // Align with the T-3 window used elsewhere for month filters.
+          dm.setDate(dm.getDate() - 3);
+          anchorDateForMonths = dm;
         }
       }
     }
 
     let mongoDateFilter = {};
     if (dateFilterTypeQ) {
-      const dayWeekPeriods = getPeriodDaysOrWeeks(dateFilterTypeQ);
+      const dayWeekPeriods = getPeriodDaysOrWeeks(dateFilterTypeQ, anchorDateForDays);
       if (dayWeekPeriods) {
         const allowedDays = [...dayWeekPeriods.current, ...dayWeekPeriods.comparison];
         const clauses = [];
@@ -1204,7 +1424,7 @@ router.get('/revenue', async (req, res) => {
         });
         if (clauses.length) mongoDateFilter = { $or: clauses };
       } else {
-        const periods = getPeriodMonths(dateFilterTypeQ, customRangeStartQ, customRangeEndQ, anchorDateForPeriods);
+        const periods = getPeriodMonths(dateFilterTypeQ, customRangeStartQ, customRangeEndQ, anchorDateForMonths);
         if (periods) {
           const allowedMonths = [...periods.current, ...periods.comparison];
           const monthOr = [];
@@ -1256,8 +1476,8 @@ router.get('/revenue', async (req, res) => {
     if (!docs.length && salesChannelFilter) {
       const dateOnlyFilter = Object.keys(mongoDateFilter).length ? mongoDateFilter : {};
       const altDocs = await req.companyModels.Revenue.find(dateOnlyFilter).lean();
-      const wanted = String(salesChannelFilter).trim().toLowerCase();
-      docs = altDocs.filter((d) => String(revenueChannelFromDoc(d) || '').trim().toLowerCase() === wanted);
+      const wanted = normalizeChannelValue(salesChannelFilter).toLowerCase();
+      docs = altDocs.filter((d) => normalizeChannelValue(revenueChannelFromDoc(d)).toLowerCase() === wanted);
     }
     const rows = docs
       .map((doc, index) => {
@@ -1354,8 +1574,8 @@ router.get('/revenue', async (req, res) => {
     let periodTypeOut = null;
 
     if (dateFilterType) {
-      const dayWeekPeriods = getPeriodDaysOrWeeks(dateFilterType);
-      const periods = dayWeekPeriods || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDateForPeriods);
+      const dayWeekPeriods = getPeriodDaysOrWeeks(dateFilterType, anchorDateForDays);
+      const periods = dayWeekPeriods || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDateForMonths);
       if (periods) {
         periodsOut = { current: periods.current, comparison: periods.comparison };
         periodLabelsOut = periods.labels || null;
@@ -1435,7 +1655,7 @@ router.get('/revenue', async (req, res) => {
 // returns KPI cards + combo chart data (line vs bar) similar to Amazon.
 router.get('/marketing', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'marketing:v2');
+    const cacheKey = buildDashboardCacheKey(req, 'marketing:v4');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -1490,6 +1710,12 @@ router.get('/marketing', async (req, res) => {
     const exactRegex = (value) =>
       new RegExp(`^\\s*${escapeRegExp(String(value).trim())}\\s*$`, 'i');
 
+    const normalizeKey = (v) =>
+      String(v ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ');
+
     if (asinFilter) {
       const re = exactRegex(asinFilter);
       addAnd({
@@ -1512,37 +1738,24 @@ router.get('/marketing', async (req, res) => {
     }
 
     if (salesChannelFilter || campaignSalesChannelFilter) {
-      // If campaign sales channel differs from the top sales channel, we must NOT
-      // pre-filter Mongo down to only the top channel; otherwise campaign dropdowns
-      // (name/portfolio/type) will be empty. So we fetch docs matching either channel,
-      // then apply top/campaign channel filters in-memory per section.
-      const normalize = (v) => String(v ?? '').trim().toLowerCase();
-      const topNorm = normalize(salesChannelFilter);
-      const campNorm = normalize(campaignSalesChannelFilter);
-      const channelValues = [];
-      if (topNorm) channelValues.push(salesChannelFilter);
-      if (campNorm && campNorm !== topNorm) channelValues.push(campaignSalesChannelFilter);
+      // We must NOT pre-filter Mongo down to only the top channel when campaign channel differs,
+      // otherwise campaign dropdowns (name/portfolio/type) can become empty.
+      // So we fetch docs matching either the selected top channel or the campaign channel.
+      const topFilter = buildSalesChannelOrFilter(salesChannelFilter) || null;
+      const campaignFilter = buildSalesChannelOrFilter(campaignSalesChannelFilter) || null;
 
-      if (channelValues.length === 1) {
-        const re = exactRegex(channelValues[0]);
-        addAnd({
-          $or: [
-            { 'Sales Channel': { $regex: re } },
-            { sales_channel: { $regex: re } },
-            { salesChannel: { $regex: re } },
-            { channel: { $regex: re } },
-          ],
-        });
-      } else if (channelValues.length > 1) {
-        const res = channelValues.map((v) => exactRegex(v));
-        const fieldNames = ['Sales Channel', 'sales_channel', 'salesChannel', 'channel'];
-        const channelOr = [];
-        fieldNames.forEach((field) => {
-          res.forEach((re) => {
-            channelOr.push({ [field]: { $regex: re } });
-          });
-        });
-        addAnd({ $or: channelOr });
+      if (topFilter && !campaignFilter) {
+        addAnd(topFilter);
+      } else if (!topFilter && campaignFilter) {
+        addAnd(campaignFilter);
+      } else if (topFilter && campaignFilter) {
+        const topNorm = normalizeKey(salesChannelFilter);
+        const campNorm = normalizeKey(campaignSalesChannelFilter);
+        if (topNorm && campNorm && topNorm === campNorm) {
+          addAnd(topFilter);
+        } else {
+          addAnd({ $or: [...(topFilter.$or || []), ...(campaignFilter.$or || [])] });
+        }
       }
     }
 
@@ -1563,40 +1776,42 @@ router.get('/marketing', async (req, res) => {
     // Do NOT apply them to the initial Mongo query, otherwise campaign selections would
     // incorrectly change the top KPIs / SKU view and can also hide data unexpectedly.
 
-    // Anchor month periods to latest Marketing data for the selected channel (matches /revenue behavior).
+    // Anchor month periods to latest Marketing data for the *selected top Sales Channel*.
+    // This keeps Marketing screen data aligned when the user changes sales channel.
     let marketingAnchorDate = null;
-    const anchorChannel = String(salesChannelFilter || campaignSalesChannelFilter || '').trim();
+    const anchorChannel = String(salesChannelFilter || '').trim();
     if (anchorChannel && (dateFilterType || campaignDateRange)) {
-      const chRe = exactRegex(anchorChannel);
-      const anchorChFilter = {
-        $or: [
-          { 'Sales Channel': { $regex: chRe } },
-          { sales_channel: { $regex: chRe } },
-          { salesChannel: { $regex: chRe } },
-          { channel: { $regex: chRe } },
-        ],
-      };
-      try {
-        const mDateDocs = await req.companyModels.Marketing.find(anchorChFilter, { Date: 1, date: 1, DATE: 1 })
-          .lean();
-        let best = '';
-        mDateDocs.forEach((d) => {
-          const key = parseDateKey(d?.Date || d?.date || d?.DATE);
-          if (key && (!best || key > best)) best = key;
-        });
-        if (best) {
-          const ad = new Date(`${best}T00:00:00.000Z`);
-          if (!Number.isNaN(ad.getTime())) {
-            ad.setDate(ad.getDate() - 3);
-            marketingAnchorDate = ad;
+      const anchorChFilter = buildSalesChannelOrFilter(anchorChannel) || null;
+      if (anchorChFilter) {
+        try {
+          const mDateDocs = await req.companyModels.Marketing.find(anchorChFilter, {
+            Date: 1,
+            date: 1,
+            DATE: 1,
+          }).lean();
+          let best = '';
+          mDateDocs.forEach((d) => {
+            const key = parseDateKey(d?.Date || d?.date || d?.DATE);
+            if (key && (!best || key > best)) best = key;
+          });
+          if (best) {
+            const [yy, mo, dd] = String(best).split('-').map((x) => parseInt(x, 10));
+            const ad = yy && mo && dd ? new Date(yy, mo - 1, dd) : null;
+            if (ad && !Number.isNaN(ad.getTime())) {
+              // Align with T-3 window.
+              ad.setDate(ad.getDate() - 3);
+              marketingAnchorDate = ad;
+            }
           }
+        } catch {
+          // ignore anchor probe errors
         }
-      } catch {
-        // ignore anchor probe errors
       }
     }
 
-    const mongoFilterWithoutDate = JSON.parse(JSON.stringify(mongoFilter));
+    // Keep a copy of the filter *before* adding any date clauses.
+    // IMPORTANT: do NOT JSON-clone, because it drops RegExp objects (breaks $regex filters).
+    const mongoFilterWithoutDate = mongoFilter?.$and?.length ? { $and: [...mongoFilter.$and] } : {};
 
     // Date prefilter: current + comparison months (or campaignDateRange months when provided).
     // If this prefilter yields 0 docs, we retry without the date clause (see find below).
@@ -1696,7 +1911,7 @@ router.get('/marketing', async (req, res) => {
 
     if (String(req.query.debugCount || '') === '1') {
       const sampleMatches = await req.companyModels.Marketing
-        .find(mongoFilter, { Date: 1, ASIN: 1, 'Sales Channel': 1 })
+        .find(mongoFilter, { Date: 1, date: 1, DATE: 1, ASIN: 1, asin: 1, 'Sales Channel': 1, sales_channel: 1, salesChannel: 1, channel: 1, year_month: 1 })
         .limit(5)
         .lean();
       const count = await req.companyModels.Marketing.countDocuments(mongoFilter);
@@ -1781,7 +1996,118 @@ router.get('/marketing', async (req, res) => {
       docs = await req.companyModels.Marketing.find(mongoFilterWithoutDate, projection).lean();
     }
 
+    if ((!docs || docs.length === 0) && salesChannelFilter) {
+      // Last-resort fallback:
+      // If date/channel prefiltering returns 0 docs, fetch docs for the latest available year_month
+      // for the selected sales channel. This keeps dropdown option lists from going blank.
+      const channelOnlyFilter = buildSalesChannelOrFilter(salesChannelFilter);
+      if (channelOnlyFilter) {
+        try {
+          const latestDoc = await req.companyModels.Marketing.findOne(channelOnlyFilter, {
+            year_month: 1,
+            yearMonth: 1,
+            'Year Month': 1,
+            Date: 1,
+            date: 1,
+            DATE: 1,
+          })
+            .lean()
+            .sort({ year_month: -1 });
+
+          let bestYm = '';
+          const ymRaw =
+            latestDoc?.year_month ??
+            latestDoc?.yearMonth ??
+            latestDoc?.['Year Month'];
+          if (typeof ymRaw === 'string' && /^\d{4}-\d{2}$/.test(ymRaw.trim())) {
+            bestYm = ymRaw.trim();
+          } else {
+            const dk = parseDateKey(latestDoc?.Date || latestDoc?.date || latestDoc?.DATE);
+            bestYm = dk ? dk.slice(0, 7) : '';
+          }
+
+          if (bestYm) {
+            const monthOnlyClause = {
+              $or: [{ year_month: bestYm }, { yearMonth: bestYm }, { 'Year Month': bestYm }],
+            };
+            const fallbackFilter = { $and: [mongoFilterWithoutDate, monthOnlyClause] };
+            docs = await req.companyModels.Marketing.find(fallbackFilter, projection).lean();
+          } else {
+            // If we can't resolve latest month, still fetch without date clause.
+            docs = await req.companyModels.Marketing.find(mongoFilterWithoutDate, projection).lean();
+          }
+        } catch {
+          // ignore fallback errors
+        }
+      }
+    }
+
     if (!docs || docs.length === 0) {
+      // Even when the current filter window yields 0 docs, we still return Sales Channel options
+      // so the UI dropdowns never go completely blank (and can auto-correct invalid defaults).
+      let salesChannelOptions = [];
+      let filterOptions = { asins: [], productNames: [], productCategories: [], packSizes: [] };
+      try {
+        const [
+          channelsA,
+          channelsB,
+          channelsC,
+          channelsD,
+          asinsA,
+          asinsB,
+          namesA,
+          namesB,
+          categoriesA,
+          categoriesB,
+          categoriesC,
+          packA,
+          packB,
+        ] = await Promise.all([
+          req.companyModels.Marketing.distinct('Sales Channel').catch(() => []),
+          req.companyModels.Marketing.distinct('salesChannel').catch(() => []),
+          req.companyModels.Marketing.distinct('channel').catch(() => []),
+          req.companyModels.Marketing.distinct('sales_channel').catch(() => []),
+          req.companyModels.Marketing.distinct('ASIN').catch(() => []),
+          req.companyModels.Marketing.distinct('asin').catch(() => []),
+          req.companyModels.Marketing.distinct('Product Name').catch(() => []),
+          req.companyModels.Marketing.distinct('product_name').catch(() => []),
+          req.companyModels.Marketing.distinct('Product Category').catch(() => []),
+          req.companyModels.Marketing.distinct('Product Sub Category').catch(() => []),
+          req.companyModels.Marketing.distinct('product_category').catch(() => []),
+          req.companyModels.Marketing.distinct('Pack Size').catch(() => []),
+          req.companyModels.Marketing.distinct('pack_size').catch(() => []),
+        ]);
+        const salesChannelSet = new Map();
+        [...(channelsA || []), ...(channelsB || []), ...(channelsC || []), ...(channelsD || [])].forEach((v) => {
+          const s = v == null ? '' : String(v).trim();
+          if (!s) return;
+          const key = s.toLowerCase();
+          if (!salesChannelSet.has(key)) salesChannelSet.set(key, s);
+        });
+        salesChannelOptions = Array.from(salesChannelSet.values()).sort((a, b) => String(a).localeCompare(String(b)));
+
+        const distinctList = (values) => {
+          const set = new Map();
+          (values || []).forEach((v) => {
+            const s = v == null ? '' : String(v).trim();
+            if (!s) return;
+            const key = s.toLowerCase();
+            if (!set.has(key)) set.set(key, s);
+          });
+          return Array.from(set.values()).sort((a, b) => String(a).localeCompare(String(b)));
+        };
+
+        filterOptions = {
+          asins: distinctList([...(asinsA || []), ...(asinsB || [])]),
+          productNames: distinctList([...(namesA || []), ...(namesB || [])]),
+          productCategories: distinctList([...(categoriesA || []), ...(categoriesB || []), ...(categoriesC || [])]),
+          packSizes: distinctList([...(packA || []), ...(packB || [])]),
+        };
+      } catch {
+        salesChannelOptions = [];
+        filterOptions = { asins: [], productNames: [], productCategories: [], packSizes: [] };
+      }
+
       return res.json({
         title: 'Marketing',
         metrics: {},
@@ -1790,7 +2116,10 @@ router.get('/marketing', async (req, res) => {
         skuRows: [],
         campaignMetrics: {},
         campaignRows: [],
-        salesChannelOptions: [],
+        campaignChartData: [],
+        salesChannelOptions,
+        filterOptions,
+        updatedAt: null,
       });
     }
 
@@ -1823,12 +2152,6 @@ router.get('/marketing', async (req, res) => {
       return ymd ? ymd.slice(0, 7) : '';
     };
 
-    const normalizeKey = (v) =>
-      String(v ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, ' ');
-
     const applyMarketingFiltersNoChannel = (doc) => {
       if (asinFilter && normalizeKey(doc.ASIN ?? doc.asin ?? '') !== normalizeKey(asinFilter)) return false;
       if (
@@ -1860,7 +2183,7 @@ router.get('/marketing', async (req, res) => {
       if (packSizeFilter && normalizeKey(doc['Pack Size'] ?? doc.pack_size ?? '') !== normalizeKey(packSizeFilter)) return false;
       if (
         salesChannelFilter
-        && normalizeKey(doc['Sales Channel'] ?? doc.sales_channel ?? doc.salesChannel ?? doc.channel ?? '') !== normalizeKey(salesChannelFilter)
+        && normalizeKey(getFieldValueLoose(doc, 'Sales Channel') ?? '') !== normalizeKey(salesChannelFilter)
       ) return false;
       return true;
     };
@@ -1906,7 +2229,7 @@ router.get('/marketing', async (req, res) => {
       ) return false;
       if (
         campaignSalesChannelFilter
-        && normalizeKey(doc['Sales Channel'] ?? doc.sales_channel ?? doc.salesChannel ?? doc.channel ?? '') !== normalizeKey(campaignSalesChannelFilter)
+        && normalizeKey(getFieldValueLoose(doc, 'Sales Channel') ?? '') !== normalizeKey(campaignSalesChannelFilter)
       ) return false;
       return true;
     };
@@ -1936,7 +2259,7 @@ router.get('/marketing', async (req, res) => {
           productName: doc['Product Name'] ?? doc.product_name ?? '',
           productCategory: doc['Product Category'] ?? doc['Product Sub Category'] ?? doc.product_category ?? doc.product_sub_category ?? '',
           packSize: doc['Pack Size'] ?? doc.pack_size != null ? String(doc['Pack Size'] ?? doc.pack_size) : '',
-          salesChannel: doc['Sales Channel'] ?? doc.sales_channel ?? '',
+          salesChannel: getFieldValueLoose(doc, 'Sales Channel') ?? '',
           latestDateKey: '',
           availableInventoryLatest: 0,
           dosLatest: 0,
