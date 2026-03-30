@@ -73,7 +73,10 @@ export default function ExecutiveSummary() {
     let cancelled = false;
     setKpiLoading(true);
     dashboardApi
-      .getKeyPerformanceMetrics({ salesChannel: salesChannelFilter || '' })
+      .getKeyPerformanceMetrics({
+        salesChannel: salesChannelFilter || '',
+        dateFilterType,
+      })
       .then((resp) => {
         if (cancelled) return;
         setKpiData(resp || null);
@@ -86,7 +89,7 @@ export default function ExecutiveSummary() {
         if (!cancelled) setKpiLoading(false);
       });
     return () => { cancelled = true; };
-  }, [salesChannelFilter]);
+  }, [salesChannelFilter, dateFilterType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,7 +190,13 @@ export default function ExecutiveSummary() {
   const tableRows = useMemo(() => {
     const currentRows = Array.isArray(revenueRows) ? revenueRows : [];
     const previousRows = Array.isArray(prevRevenueRows) ? prevRevenueRows : [];
-    const selectedChannel = salesChannelFilter ? String(salesChannelFilter).trim().toLowerCase() : '';
+    const normalizeChannel = (v) =>
+      String(v ?? '')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+    const selectedChannel = salesChannelFilter ? normalizeChannel(salesChannelFilter) : '';
 
     const computePct = (curr, prev) => {
       const c = Number(curr) || 0;
@@ -254,9 +263,7 @@ export default function ExecutiveSummary() {
       };
     });
 
-    const filteredByChannel = selectedChannel
-      ? merged.filter((r) => String(r.salesChannel || '').trim().toLowerCase() === selectedChannel)
-      : merged;
+    const filteredByChannel = selectedChannel ? merged.filter((r) => normalizeChannel(r.salesChannel) === selectedChannel) : merged;
 
     if (activeDeepDiveTab === 'declining') {
       return filteredByChannel
@@ -369,9 +376,12 @@ export default function ExecutiveSummary() {
     });
   };
 
+  const kpiHeaderDisplay = kpiData?.kpiHeader || 'Key Performance Metrics';
+  const kpiActualColumnHeader = kpiData?.actualColumnHeader || 'Actual (MTD)';
+
   const dataUpdatedDisplay = (() => {
-    // Prefer buybox snapshot date when API returns it (matches OPEN PO / PO RECEIVED / ASIN cards).
-    const raw = data?.buyboxSnapshotDate || latestUpdatedAtByChannel || data?.dataUpdated || '';
+    // Match other dashboard screens: show the latest updated revenue date (not only the buybox snapshot).
+    const raw = latestUpdatedAtByChannel || data?.dataUpdated || data?.buyboxSnapshotDate || '';
     const dateKey = raw ? String(raw).split('T')[0] : '';
     return dateKey ? formatDateDDMonYY(dateKey) : null;
   })();
@@ -439,7 +449,7 @@ export default function ExecutiveSummary() {
 
       <section className="card exec-kpi-shell fade-in-up">
         <div className="exec-kpi-top">
-          <h3 className="exec-kpi-title">Key Performance Metrics (Current month)</h3>
+          <h3 className="exec-kpi-title">{kpiHeaderDisplay}</h3>
           {dataUpdatedDisplay && (
             <p className="exec-updated-text">
               <span className="pulse-dot" />
@@ -451,14 +461,14 @@ export default function ExecutiveSummary() {
         <div className="exec-kpi-main">
           <div className="exec-metrics-main">
             <div className="exec-po-card">
-              <div className="exec-po-header">Key Performance Metrics (Current month) {salesChannelFilter ? `– ${salesChannelFilter}` : ''}</div>
+              <div className="exec-po-header">{kpiHeaderDisplay}</div>
               <div className="table-wrap exec-table">
                 <table className="data-table exec-po-table">
                   <thead>
                     <tr>
                       <th>Metrics</th>
                       <th className="col-num">Targets</th>
-                      <th className="col-num">Actual (MTD)</th>
+                      <th className="col-num">{kpiActualColumnHeader}</th>
                       <th className="col-num">Actual (Exp)</th>
                       <th className="col-num">Variation</th>
                     </tr>
@@ -467,7 +477,7 @@ export default function ExecutiveSummary() {
                     {kpiLoading ? (
                       <tr>
                         <td colSpan={5} className="text-secondary">
-                          Loading current month targets and MTD actuals…
+                          Loading targets and actuals…
                         </td>
                       </tr>
                     ) : (

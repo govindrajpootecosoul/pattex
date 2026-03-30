@@ -106,6 +106,9 @@ export const dashboardApi = {
   getKeyPerformanceMetrics: (params) => {
     const q = new URLSearchParams();
     if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
     const query = q.toString();
     return request(`/dashboard/key-performance-metrics${query ? `?${query}` : ''}`);
   },
@@ -154,6 +157,8 @@ export const dashboardApi = {
   },
   getMarketing: (params) => {
     const q = new URLSearchParams();
+    // Cache buster so UI doesn't keep serving old empty responses after backend logic changes.
+    q.set('marketingCacheVersion', '5');
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
     if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
     if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);

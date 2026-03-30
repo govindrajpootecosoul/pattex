@@ -272,6 +272,7 @@ export default function Marketing() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [error, setError] = useState('');
   const [funnelTotals, setFunnelTotals] = useState(null);
   const [filters, setFilters] = useState({
     asin: '',
@@ -312,6 +313,7 @@ export default function Marketing() {
 
   useEffect(() => {
     setLoading(true);
+    setError('');
     if (hasLoadedOnce) setShowProcessing(true);
     const params = {};
     if (dateFilterType) params.dateFilterType = dateFilterType;
@@ -360,13 +362,18 @@ export default function Marketing() {
         const previous = normalizeMarketingTotals(previousMonthResp);
         setFunnelTotals({ current, previous });
       })
-      .catch(() => {
-        setData({
-          title: 'Marketing',
-          comingSoon: true,
-          message: 'Marketing section – coming soon.',
-        });
-        setFunnelTotals(null);
+      .catch((err) => {
+        const msg = err?.message ? String(err.message) : 'Failed to load marketing data';
+        setError(msg);
+        // If we already have data on screen, keep it (don’t blank the UI on transient errors).
+        if (!hasLoadedOnce) {
+          setData({
+            title: 'Marketing',
+            comingSoon: true,
+            message: 'Marketing section – coming soon.',
+          });
+          setFunnelTotals(null);
+        }
       })
       .finally(() => {
         setLoading(false);
@@ -604,23 +611,35 @@ export default function Marketing() {
   }, [funnelTotals]);
   const skuRows = (data && !data.comingSoon && Array.isArray(data.skuRows) ? data.skuRows : []);
 
-  // Options for top Marketing filters, fetched from Marketing data (skuRows)
-  const asinOptions = useMemo(
-    () => Array.from(new Set(skuRows.map((r) => r.asin).filter(Boolean))),
-    [skuRows],
-  );
-  const productNameOptions = useMemo(
-    () => Array.from(new Set(skuRows.map((r) => r.productName).filter(Boolean))),
-    [skuRows],
-  );
-  const productCategoryOptions = useMemo(
-    () => Array.from(new Set(skuRows.map((r) => r.productCategory).filter(Boolean))),
-    [skuRows],
-  );
-  const packSizeOptions = useMemo(
-    () => Array.from(new Set(skuRows.map((r) => r.packSize).filter(Boolean))),
-    [skuRows],
-  );
+  // Options for top Marketing filters.
+  // Prefer backend-provided distinct lists when available (stays populated even if current period has 0 rows),
+  // else derive from `skuRows`.
+  const distinctFromData = (key) =>
+    Array.isArray(data?.filterOptions?.[key]) ? data.filterOptions[key].filter(Boolean) : [];
+
+  const asinOptions = useMemo(() => {
+    const fromApi = distinctFromData('asins');
+    if (fromApi.length) return fromApi;
+    return Array.from(new Set(skuRows.map((r) => r.asin).filter(Boolean)));
+  }, [data?.filterOptions, skuRows]);
+
+  const productNameOptions = useMemo(() => {
+    const fromApi = distinctFromData('productNames');
+    if (fromApi.length) return fromApi;
+    return Array.from(new Set(skuRows.map((r) => r.productName).filter(Boolean)));
+  }, [data?.filterOptions, skuRows]);
+
+  const productCategoryOptions = useMemo(() => {
+    const fromApi = distinctFromData('productCategories');
+    if (fromApi.length) return fromApi;
+    return Array.from(new Set(skuRows.map((r) => r.productCategory).filter(Boolean)));
+  }, [data?.filterOptions, skuRows]);
+
+  const packSizeOptions = useMemo(() => {
+    const fromApi = distinctFromData('packSizes');
+    if (fromApi.length) return fromApi;
+    return Array.from(new Set(skuRows.map((r) => r.packSize).filter(Boolean)));
+  }, [data?.filterOptions, skuRows]);
   // Use API-provided list (all unique Sales Channels in DB) when available; else derive from skuRows
   const salesChannelOptions = useMemo(() => {
     if (allSalesChannels.length > 0) return allSalesChannels;
@@ -633,7 +652,12 @@ export default function Marketing() {
   // Ensure the selected sales channel matches an available option on first render/load.
   useEffect(() => {
     if (!salesChannelOptions || salesChannelOptions.length === 0) return;
-    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const normalize = (v) =>
+      String(v ?? '')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
     const current = normalize(filters.salesChannel);
     const optionsNormalized = salesChannelOptions.map((c) => ({ raw: c, key: normalize(c) }));
     const hasExact = current && optionsNormalized.some((o) => o.key === current);
@@ -734,7 +758,12 @@ export default function Marketing() {
   // Ensure the selected campaign sales channel matches an available option on first render/load.
   useEffect(() => {
     if (!campaignSalesChannelOptions || campaignSalesChannelOptions.length === 0) return;
-    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const normalize = (v) =>
+      String(v ?? '')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
     const current = normalize(campaignFilters.salesChannel);
     const optionsNormalized = campaignSalesChannelOptions.map((c) => ({ raw: c, key: normalize(c) }));
     const hasExact = current && optionsNormalized.some((o) => o.key === current);
@@ -980,6 +1009,23 @@ export default function Marketing() {
       </style>
 
       <div className="card marketing-filters-card">
+        {error && (
+          <div
+            role="alert"
+            style={{
+              marginBottom: 12,
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: '1px solid rgba(239,68,68,0.35)',
+              background: 'rgba(254,242,242,0.9)',
+              color: '#991b1b',
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            {error}
+          </div>
+        )}
         <div className="filter-row filter-row-one">
           <div className="filter-group">
             <select
