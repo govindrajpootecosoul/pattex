@@ -39,6 +39,9 @@ const INVENTORY_VISIBLE_COLUMNS_STORAGE_KEY = 'pattex.inventory.visibleColumns.v
 function getStatusBadgeClass(status) {
   if (!status) return 'badge-instock';
   const s = String(status).toLowerCase();
+  if (s === 'overstock') return 'badge-overstock';
+  if (s === 'healthy' || s === 'healty') return 'badge-healthy';
+  if (s === 'understock') return 'badge-understock';
   if (s === 'oos' || s === 'out of stock' || s === 'out') return 'badge-oos badge-out';
   if (s === 'critical' || s === 'low' || s === 'low stock') return 'badge-low badge-critical';
   return 'badge-instock badge-active';

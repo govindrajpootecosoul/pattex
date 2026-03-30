@@ -463,9 +463,9 @@
 
 .card h3 {
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 700;
   margin-bottom: 0.75rem;
-  color: var(--text-muted);
+  color: #111827;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
@@ -647,8 +647,8 @@
 }
 
 .data-table th {
-  color: var(--text-muted);
-  font-weight: 500;
+  color: #111827;
+  font-weight: 700;
   font-size: 0.8125rem;
   white-space: nowrap;
   background: var(--bg);
@@ -755,6 +755,21 @@
   border-radius: 999px;
   font-size: 0.75rem;
   font-weight: 500;
+}
+
+.badge-overstock {
+  background: var(--success-bg);
+  color: #047857;
+}
+
+.badge-understock {
+  background: var(--danger-bg);
+  color: #be123c;
+}
+
+.badge-healthy {
+  background: rgba(148, 163, 184, 0.25);
+  color: #334155;
 }
 
 .badge-instock,
@@ -1220,15 +1235,16 @@
   border-radius: 999px;
   border: 1px solid var(--border);
   background: transparent;
-  color: var(--text-muted);
+  color: #111827;
   font-size: 0.85rem;
+  font-weight: 700;
 }
 
 .btn-chip.active {
   background: rgba(59, 130, 246, 0.12);
   border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 500;
+  color: #111827;
+  font-weight: 700;
 }
 
 .column-picker-wrap {
