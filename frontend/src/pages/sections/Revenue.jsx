@@ -288,6 +288,8 @@ export default function Revenue() {
   const [comparison, setComparison] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
+  /** Resolved periods from API — same anchor server used for the query (avoids empty table vs client guess). */
+  const [revenuePeriodMeta, setRevenuePeriodMeta] = useState(null);
   const allSalesChannels = useSalesChannels();
   const anchorDate = useMemo(
     () => getAnchorDateForPeriods(latestUpdatedAtByChannel, updatedAt),
@@ -310,11 +312,17 @@ export default function Revenue() {
         if (!cancelled) {
           setComparison(data?.comparison ?? null);
           setUpdatedAt(data?.updatedAt ?? null);
+          if (data?.periods?.current && data?.periodType) {
+            setRevenuePeriodMeta({ periods: data.periods, periodType: data.periodType });
+          } else {
+            setRevenuePeriodMeta(null);
+          }
         }
       })
       .catch((err) => {
         if (!cancelled) setError(err?.message || 'Failed to load revenue data');
         if (!cancelled) setComparison(null);
+        if (!cancelled) setRevenuePeriodMeta(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -443,6 +451,17 @@ export default function Revenue() {
 
   const applyFilters = (row) => {
     if (!applyNonDateFilters(row)) return false;
+    if (!dateFilterType) return true;
+    if (revenuePeriodMeta?.periods?.current?.length) {
+      const cur = new Set(revenuePeriodMeta.periods.current);
+      const pType = revenuePeriodMeta.periodType;
+      if (pType === 'DAY' || pType === 'WEEK') {
+        if (!row.reportDate) return true;
+        return cur.has(row.reportDate);
+      }
+      if (!row.reportMonth) return true;
+      return cur.has(row.reportMonth);
+    }
     const dateRange = getDateRangeForFilter(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
     if (!dateRange || !row.reportMonth) return true;
     return row.reportMonth >= dateRange.start && row.reportMonth <= dateRange.end;
@@ -539,15 +558,19 @@ export default function Revenue() {
 
   /** Comparison that respects date period + all filters (current vs previous period). */
   const localComparison = useMemo(() => {
-    const periods = getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
+    const fromApi = revenuePeriodMeta?.periods;
+    const periods = fromApi || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
+    const periodType = revenuePeriodMeta?.periodType || 'MONTH';
     if (!periods || !revenueRows.length) return null;
     const currentSet = new Set(periods.current);
     const comparisonSet = new Set(periods.comparison);
+    const isDayWeek = periodType === 'DAY' || periodType === 'WEEK';
+    const key = isDayWeek ? 'reportDate' : 'reportMonth';
     const currentRows = revenueRows.filter(
-      (r) => applyNonDateFilters(r) && r.reportMonth && currentSet.has(r.reportMonth),
+      (r) => applyNonDateFilters(r) && r[key] && currentSet.has(r[key]),
     );
     const comparisonRows = revenueRows.filter(
-      (r) => applyNonDateFilters(r) && r.reportMonth && comparisonSet.has(r.reportMonth),
+      (r) => applyNonDateFilters(r) && r[key] && comparisonSet.has(r[key]),
     );
     const aggregate = (rows) => {
       let overallRevenue = 0;
@@ -573,7 +596,19 @@ export default function Revenue() {
       tacos: { pctChange: fmt(pctChange(curr.tacos, prev.tacos)) },
       adSpend: { pctChange: fmt(pctChange(curr.adSpend, prev.adSpend)) },
     };
-  }, [dateFilterType, customRangeStart, customRangeEnd, revenueRows, filters.search, filters.asin, filters.productName, filters.category, filters.channel, anchorDate]);
+  }, [
+    dateFilterType,
+    customRangeStart,
+    customRangeEnd,
+    revenueRows,
+    revenuePeriodMeta,
+    filters.search,
+    filters.asin,
+    filters.productName,
+    filters.category,
+    filters.channel,
+    anchorDate,
+  ]);
 
   const kpiTrends = useMemo(() => {
     const source = localComparison || comparison;

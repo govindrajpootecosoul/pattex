@@ -42,8 +42,8 @@ export default function Profile() {
     [users]
   );
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 

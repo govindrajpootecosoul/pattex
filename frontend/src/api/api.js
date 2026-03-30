@@ -1,3 +1,4 @@
+import { isCancelledError } from '@tanstack/react-query';
 import { queryClient } from '../queryClient.js';
 
 function normalizeBaseUrl(raw) {
@@ -31,11 +32,24 @@ async function request(path, options = {}) {
     ...options.headers,
   };
 
-  const doFetch = async () => {
+  const doFetch = async (signal) => {
     let res;
+    const fetchInit = {
+      ...options,
+      headers,
+      // Critical for auth: browsers may reuse cached GET bodies for the same URL
+      // across different Authorization headers, which breaks user switching.
+      cache: 'no-store',
+    };
+    if (signal) {
+      fetchInit.signal = signal;
+    }
     try {
-      res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+      res = await fetch(`${API_BASE}${path}`, fetchInit);
     } catch (err) {
+      if (isCancelledError(err) || err?.name === 'AbortError') {
+        throw err;
+      }
       if (isNetworkError(err)) {
         throw new Error('Cannot reach server. Start the backend with: cd backend && npm run dev');
       }
@@ -53,7 +67,7 @@ async function request(path, options = {}) {
     const queryKey = ['api:GET', path, token || ''];
     return queryClient.fetchQuery({
       queryKey,
-      queryFn: doFetch,
+      queryFn: ({ signal }) => doFetch(signal),
       staleTime: 5 * 60 * 1000,
       gcTime: 10 * 60 * 1000,
       refetchOnWindowFocus: false,
@@ -71,6 +85,7 @@ async function request(path, options = {}) {
 
 export const authApi = {
   login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout: () => request('/auth/logout', { method: 'POST', body: JSON.stringify({}) }),
   signup: (body) => request('/auth/signup', { method: 'POST', body: JSON.stringify(body) }),
   getUsersByDatabase: () => request('/auth/users', { method: 'GET' }),
   updateUser: (id, body) => request(`/auth/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -82,6 +97,9 @@ export const dashboardApi = {
   getExecutiveSummary: (params) => {
     const q = new URLSearchParams();
     if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
     const query = q.toString();
     return request(`/dashboard/executive-summary${query ? `?${query}` : ''}`);
   },

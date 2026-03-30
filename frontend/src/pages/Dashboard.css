@@ -713,6 +713,22 @@
   color: var(--text-muted);
 }
 
+/* Beat .data-table td { color } so KPI / deep-dive trend colors show (green up, red down). */
+.data-table td.variation-cell.variation-positive,
+.data-table td .variation-positive {
+  color: var(--success);
+}
+
+.data-table td.variation-cell.variation-negative,
+.data-table td .variation-negative {
+  color: var(--danger);
+}
+
+.data-table td.variation-cell.variation-neutral,
+.data-table td .variation-neutral {
+  color: var(--text-muted);
+}
+
 .exec-po-card {
   border-radius: var(--radius);
   border: none;

@@ -19,8 +19,8 @@ export default function Dashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const headerName = user?.databaseName || import.meta.env.VITE_APP_NAME || 'Dashboard';
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 

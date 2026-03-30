@@ -1,4 +1,7 @@
 import { createContext, useContext, useState, useEffect } from 'react';
+import { authApi } from '../api/api';
+import { queryClient } from '../queryClient.js';
+import { PATTEX_UI_STORAGE_KEYS } from '../constants/logoutStorageKeys.js';
 
 const AuthContext = createContext(null);
 
@@ -33,7 +36,25 @@ export function AuthProvider({ children }) {
     login(userData, token);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // Cancel in-flight GETs first so nothing repopulates React Query after clear().
+    // Then clear cache before server logout so we are not blocked on Redis SCAN while stale data could win races.
+    await queryClient.cancelQueries();
+    queryClient.clear();
+    try {
+      if (localStorage.getItem(TOKEN_KEY)) {
+        await authApi.logout();
+      }
+    } catch (_) {
+      // Still clear client state if the server is down or the token expired.
+    }
+    for (const key of PATTEX_UI_STORAGE_KEYS) {
+      try {
+        localStorage.removeItem(key);
+      } catch (_) {
+        /* ignore quota / private mode */
+      }
+    }
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     setUser(null);

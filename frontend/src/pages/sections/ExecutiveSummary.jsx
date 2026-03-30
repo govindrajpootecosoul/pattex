@@ -13,7 +13,8 @@ export default function ExecutiveSummary() {
   const [revenueRows, setRevenueRows] = useState([]);
   const [prevRevenueRows, setPrevRevenueRows] = useState([]);
   const [revenueLoading, setRevenueLoading] = useState(true);
-  const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('declining');
+  // Default to top sellers so month filters show rows immediately (declining/increasing can be empty legitimately).
+  const [activeDeepDiveTab, setActiveDeepDiveTab] = useState('top_selling');
   const [dateFilterType, setDateFilterType] = useState('CURRENT_DAY'); // CURRENT_MONTH | PREVIOUS_MONTH | CURRENT_DAY | PREVIOUS_DAY | CURRENT_WEEK | PREVIOUS_WEEK
   const [periodLabels, setPeriodLabels] = useState({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
   const [salesChannelFilter, setSalesChannelFilter] = useState('Seller Central');
@@ -33,7 +34,7 @@ export default function ExecutiveSummary() {
     setLoading(true);
     setError('');
     dashboardApi
-      .getExecutiveSummary({ salesChannel: salesChannelFilter || '' })
+      .getExecutiveSummary({ salesChannel: salesChannelFilter || '', dateFilterType })
       .then((payload) => {
         if (cancelled) return;
         if (!payload) {
@@ -51,7 +52,7 @@ export default function ExecutiveSummary() {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [salesChannelFilter]);
+  }, [salesChannelFilter, dateFilterType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,7 +192,8 @@ export default function ExecutiveSummary() {
     const computePct = (curr, prev) => {
       const c = Number(curr) || 0;
       const p = Number(prev) || 0;
-      if (p === 0) return null; // undefined % change (new launch or both 0)
+      if (p === 0 && c === 0) return 0; // no sales in either period → 0% change (not "missing")
+      if (p === 0) return null; // new sales vs zero baseline → show "New" in UI
       return ((c - p) / p) * 100;
     };
 
@@ -273,14 +275,16 @@ export default function ExecutiveSummary() {
         .sort((a, b) => (a.pctChangeUnits ?? 0) - (b.pctChangeUnits ?? 0));
     }
     if (activeDeepDiveTab === 'top_selling') {
+      // Only ASINs with revenue in the *current* filter period (second revenue column).
+      // No backfill with current=0 — previous day can be 0, but the selected period cannot show 0 here.
       return filteredByChannel
-        .slice()
+        .filter((r) => (Number(r.currentRevenue) || 0) > 0)
         .sort((a, b) => (b.currentRevenue ?? 0) - (a.currentRevenue ?? 0))
         .slice(0, 10);
     }
 
     return filteredByChannel;
-  }, [revenueRows, prevRevenueRows, activeDeepDiveTab, salesChannelFilter]);
+  }, [revenueRows, prevRevenueRows, activeDeepDiveTab, salesChannelFilter, dateFilterType]);
 
   const totalRows = tableRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
@@ -366,8 +370,9 @@ export default function ExecutiveSummary() {
   };
 
   const dataUpdatedDisplay = (() => {
-    const iso = latestUpdatedAtByChannel || data.dataUpdated || '';
-    const dateKey = iso ? String(iso).split('T')[0] : '';
+    // Prefer buybox snapshot date when API returns it (matches OPEN PO / PO RECEIVED / ASIN cards).
+    const raw = data?.buyboxSnapshotDate || latestUpdatedAtByChannel || data?.dataUpdated || '';
+    const dateKey = raw ? String(raw).split('T')[0] : '';
     return dateKey ? formatDateDDMonYY(dateKey) : null;
   })();
 
@@ -491,11 +496,15 @@ export default function ExecutiveSummary() {
                               : '—'}
                           </td>
                           <td className={`col-num variation-cell variation-${variationClass}`}>
-                            {typeof row.variation === 'number'
-                              ? row.variation >= 0
-                                ? `↑${row.variation.toFixed(1)}%`
-                                : `↓${Math.abs(row.variation).toFixed(1)}%`
-                              : row.variation || '—'}
+                            {typeof row.variation === 'number' ? (
+                              row.variation >= 0 ? (
+                                <span className="variation-positive">↑{row.variation.toFixed(1)}%</span>
+                              ) : (
+                                <span className="variation-negative">↓{Math.abs(row.variation).toFixed(1)}%</span>
+                              )
+                            ) : (
+                              row.variation || '—'
+                            )}
                           </td>
                         </tr>
                       );
@@ -597,30 +606,54 @@ export default function ExecutiveSummary() {
                     </tr>
                   </thead>
                   <tbody>
+                    {!revenueLoading && pagedRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="text-secondary">
+                          No ASINs match this view for the selected period and channel. Try &quot;Top-selling
+                          products&quot; or another tab — &quot;Declining&quot; / &quot;Increasing&quot; only list
+                          ASINs with revenue moving down or up vs the comparison period.
+                        </td>
+                      </tr>
+                    ) : null}
                     {pagedRows.map((row) => (
                       <tr key={row.id}>
                         <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
-                        <td>
-                          <div className="cell-product">
-                            <div className="table-thumb" aria-hidden>—</div>
-                            <div>{row.productName ?? '—'}</div>
-                          </div>
-                        </td>
+                        <td>{row.productName ?? '—'}</td>
                         <td className="col-num">{formatAedRounded(row.previousRevenue)}</td>
                         <td className="col-num">{formatAedRounded(row.currentRevenue)}</td>
                         <td className="col-num">
                           {(() => {
                             const v = Number(row.absDiffRevenue) || 0;
-                            if (v >= 0) return `↑${v.toLocaleString()}`;
-                            return `↓${Math.abs(v).toLocaleString()}`;
+                            if (v === 0) {
+                              return <span className="variation-neutral">0</span>;
+                            }
+                            const cls = v > 0 ? 'variation-positive' : 'variation-negative';
+                            return (
+                              <span className={cls}>
+                                {v > 0 ? '↑' : '↓'}
+                                {Math.round(Math.abs(v)).toLocaleString()}
+                              </span>
+                            );
                           })()}
                         </td>
                         <td className="col-num">
-                          {row.pctChangeRevenue == null
-                            ? ((Number(row.previousRevenue) || 0) === 0 && (Number(row.currentRevenue) || 0) > 0 ? 'New' : '—')
-                            : row.pctChangeRevenue >= 0
-                              ? `↑${row.pctChangeRevenue.toFixed(1)}%`
-                              : `↓${Math.abs(row.pctChangeRevenue).toFixed(1)}%`}
+                          {row.pctChangeRevenue == null ? (
+                            (Number(row.previousRevenue) || 0) === 0 && (Number(row.currentRevenue) || 0) > 0 ? (
+                              <span className="variation-positive">New</span>
+                            ) : (
+                              <span className="variation-neutral">—</span>
+                            )
+                          ) : row.pctChangeRevenue === 0 ? (
+                            <span className="variation-neutral">0%</span>
+                          ) : row.pctChangeRevenue > 0 ? (
+                            <span className="variation-positive">
+                              ↑{Math.round(row.pctChangeRevenue)}%
+                            </span>
+                          ) : (
+                            <span className="variation-negative">
+                              ↓{Math.round(Math.abs(row.pctChangeRevenue))}%
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
