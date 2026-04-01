@@ -110,6 +110,12 @@ function truncateText(value, maxChars) {
   return `${s.slice(0, maxChars)}...`;
 }
 
+function csvEscape(field) {
+  const s = field == null ? '' : String(field);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 const parseNumLoose = (value) => {
   if (value == null || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -134,6 +140,7 @@ export default function Buybox() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [sort, setSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
   // Key Buybox Metrics should reflect currently applied UI filters,
   // so we compute them client-side from filtered rows (not from API summary).
   const [filters, setFilters] = useState({
@@ -255,6 +262,8 @@ export default function Buybox() {
   const dragColumnIdRef = useRef(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [csvDownloading, setCsvDownloading] = useState(false);
+  const [csvExportError, setCsvExportError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [salesChannelOptionsFromApi, setSalesChannelOptionsFromApi] = useState([]);
@@ -574,6 +583,108 @@ export default function Buybox() {
     }
   };
 
+  /** Plain-string values for CSV — keep in sync with `renderCellByColumnId` */
+  const formatBuyboxRowCsvValue = (id, row) => {
+    switch (id) {
+      case 'brand': return textOrZero(pick(row, ['Brand', 'brand']));
+      case 'asin': return textOrZero(row.asin);
+      case 'productName': {
+        const raw = pick(row, ['Product Name', 'productName', 'product_name']);
+        const full = raw == null ? '' : String(raw);
+        return full ? full : '0';
+      }
+      case 'productCategory': {
+        const raw = pick(row, ['Product Category', 'productCategory', 'product_category']);
+        const full = raw == null ? '' : String(raw);
+        return full ? full : '0';
+      }
+      case 'packType': return textOrZero(pick(row, ['Pack Type', 'packType']));
+      case 'packSize': return textOrZero(row.packSize);
+      case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
+      case 'totalSale': return formatAed(pick(row, ['totalSales', 'total_sales']));
+      case 'vcAvailableInventory': return textOrZero(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
+      case 'scAvailableInventory': return textOrZero(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
+      case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
+      case 'dos': return textOrZero(pick(row, ['DOS', 'dos']));
+      case 'scIdealPrice': return textOrZero(pick(row, ['SC Ideal Price', 'scIdealPrice']));
+      case 'vcIdealPrice': return textOrZero(pick(row, ['VC Ideal Price', 'vcIdealPrice']));
+      case 'currentOwner': return textOrZero(pick(row, ['Current Owner', 'currentOwner', 'currentBuyboxOwner']));
+      case 'currentOwnerPrice': return formatAed(pick(row, ['Current Owner Price', 'currentOwnerPrice', 'currentBuyboxPrice']));
+      case 'hijacker1': return textOrZero(pick(row, ['Hijacker 1', 'hijacker1']));
+      case 'hijacker1Price': return formatAed(pick(row, ['Hijacker 1 Price', 'hijacker1Price']));
+      case 'hijacker1MOQ': return textOrZero(pick(row, ['Hijacker 1 MOQ', 'hijacker1MOQ']));
+      case 'hijacker2': return textOrZero(pick(row, ['Hijacker 2', 'hijacker2']));
+      case 'hijacker2Price': return formatAed(pick(row, ['Hijacker 2 Price', 'hijacker2Price']));
+      case 'hijacker2MOQ': return textOrZero(pick(row, ['Hijacker 2 MOQ', 'hijacker2MOQ']));
+      case 'hijacker3Price': return formatAed(pick(row, ['Hijacker 3 Price', 'hijacker3Price']));
+      case 'hijacker3': return textOrZero(pick(row, ['Hijacker 3', 'hijacker3']));
+      case 'productSubCategory': return textOrZero(pick(row, ['Product Sub Category', 'productSubCategory']));
+      case 'vendorConfirmationPct': return percentOrZero(pick(row, ['Vendor Confirmation %', 'vendorConfirmationPct']));
+      case 'poReceivedAmount': return formatAed(pick(row, ['PO_received_amount', 'poReceivedAmount']));
+      case 'poReceivedUnits': return textOrZero(pick(row, ['PO_received_Units', 'poReceivedUnits']));
+      case 'receiveFillRate': return percentOrZero(pick(row, ['Receive_Fill_Rate', 'receiveFillRate']));
+      case 'overallVendorLeadTimeDays': return textOrZero(pick(row, ['Overall Vendor Lead Time (days)', 'overallVendorLeadTimeDays']));
+      case 'aged90PlusSellableInventory': return textOrZero(pick(row, ['Aged 90+ Days Sellable Inventory', 'aged90PlusSellableInventory']));
+      case 'aged90PlusSellableUnits': return textOrZero(pick(row, ['Aged 90+ Days Sellable Units', 'aged90PlusSellableUnits']));
+      case 'sellableInventoryAmount': return formatAed(pick(row, ['Sellable Inventory Amount', 'sellableInventoryAmount']));
+      case 'availableInventory': return textOrZero(pick(row, ['Available Inventory', 'availableInventory']));
+      case 'unsellableOnHandInventoryAmount': return textOrZero(pick(row, ['Unsellable On Hand Inventory Amount', 'unsellableOnHandInventoryAmount']));
+      case 'unsellableOnHandUnits': return textOrZero(pick(row, ['Unsellable On Hand Units', 'unsellableOnHandUnits']));
+      case 'reportDate': {
+        const v = pick(row, ['Date', 'reportDate']);
+        const s = v == null ? '' : String(v);
+        return s ? formatDateDDMonYY(s.slice(0, 10)) : '0';
+      }
+      case 'salesChannel': return textOrZero(pick(row, ['Sales Channel', 'salesChannel', 'channel']));
+      case 'inStockFlag': return textOrZero(pick(row, ['in_stock_flag', 'inStockFlag']));
+      case 'cumulativeInstockDays': return textOrZero(pick(row, ['cumulative_instock_days', 'cumulativeInstockDays']));
+      case 'dayOfMonth': return textOrZero(pick(row, ['day_of_month', 'dayOfMonth']));
+      case 'instockRate': return textOrZero(pick(row, ['Instock Rate', 'instockRate']));
+      case 'oosDate': return textOrZero(pick(row, ['OOS Date', 'oosDate']));
+      case 'totalUnits': return textOrZero(pick(row, ['total_units', 'totalUnits']));
+      case 'sellThrough': return textOrZero(pick(row, ['sell_through', 'sellThrough']));
+      case 'minAvailableQty': return textOrZero(pick(row, ['min_available_qty', 'minAvailableQty']));
+      case 'maxAvailableQty': return textOrZero(pick(row, ['max_available_qty', 'maxAvailableQty']));
+      case 'stockStatus': return textOrZero(pick(row, ['Stock_Status', 'stockStatus']));
+      case 'noLowStockWtOpenPOs': return textOrZero(pick(row, ['No/Low Stock wt Open POs', 'noLowStockWtOpenPOs']));
+      case 'noLowStockWtNoOpenPOs': return textOrZero(pick(row, ['No/Low Stock wt no Open POs', 'noLowStockWtNoOpenPOs']));
+      case 'currentOwnerMOQ': return textOrZero(pick(row, ['Current Owner MOQ', 'currentOwnerMOQ', 'moq']));
+      case 'hijacker3MOQ': return textOrZero(pick(row, ['Hijacker 3 MOQ', 'hijacker3MOQ']));
+      default: return '0';
+    }
+  };
+
+  const downloadDetailedBuyboxCsv = () => {
+    setCsvExportError('');
+    setCsvDownloading(true);
+    try {
+      const activeCols = visibleOrderedColumnIds.filter((id) => visibleColumns[id]);
+      if (activeCols.length === 0) {
+        setCsvExportError('Select at least one column to export.');
+        return;
+      }
+      const header = activeCols.map((colId) => csvEscape(columnDefsById[colId]?.label || colId)).join(',');
+      const lines = [header];
+      for (const row of sortedRows) {
+        lines.push(activeCols.map((colId) => csvEscape(formatBuyboxRowCsvValue(colId, row))).join(','));
+      }
+      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeStock = String(stockFilter || 'ALL').replace(/[^a-z0-9_-]/gi, '_');
+      a.download = `buybox-detailed-${safeStock}-${selectedDate || 'date'}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
+
   const allColumnsSelected = useMemo(
     () => BUYBOX_COLUMN_OPTIONS.every((c) => !!visibleColumns[c.id]),
     [visibleColumns],
@@ -718,15 +829,206 @@ export default function Buybox() {
     );
   };
 
+  const sortedRows = useMemo(() => {
+    const dir = sort?.dir === 'desc' ? 'desc' : 'asc';
+    const rawKey = sort?.key || 'productName';
+    const key = rawKey === 'brand' || rawKey === 'asin' ? 'productName' : rawKey;
+
+    const getCellValue = (row) => {
+      switch (key) {
+        case 'productName':
+          return String(pick(row, ['Product Name', 'productName', 'product_name']) ?? '');
+        case 'productCategory':
+          return String(pick(row, ['Product Category', 'productCategory', 'product_category']) ?? '');
+        case 'packType':
+          return String(pick(row, ['Pack Type', 'packType']) ?? '');
+        case 'packSize':
+          return row?.packSize ?? '';
+        case 'totalSales':
+          return Number(last30SalesByAsinMap.get(row?.asin) ?? 0);
+        case 'totalSale':
+          return parseNumLoose(pick(row, ['totalSales', 'total_sales']));
+        case 'vcAvailableInventory':
+          return parseNumLoose(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
+        case 'scAvailableInventory':
+          return parseNumLoose(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
+        case 'openPOs':
+          return parseNumLoose(pick(row, ['Open POs', 'openPOs']));
+        case 'dos':
+          return parseNumLoose(pick(row, ['DOS', 'dos']));
+        case 'scIdealPrice':
+          return parseNumLoose(pick(row, ['SC Ideal Price', 'scIdealPrice']));
+        case 'vcIdealPrice':
+          return parseNumLoose(pick(row, ['VC Ideal Price', 'vcIdealPrice']));
+        case 'currentOwner':
+          return String(pick(row, ['Current Owner', 'currentOwner', 'currentBuyboxOwner']) ?? '');
+        case 'currentOwnerPrice':
+          return parseNumLoose(pick(row, ['Current Owner Price', 'currentOwnerPrice', 'currentBuyboxPrice']));
+        case 'currentOwnerMOQ':
+          return parseNumLoose(pick(row, ['Current Owner MOQ', 'currentOwnerMOQ', 'moq']));
+        case 'hijacker1':
+          return String(pick(row, ['Hijacker 1', 'hijacker1']) ?? '');
+        case 'hijacker2':
+          return String(pick(row, ['Hijacker 2', 'hijacker2']) ?? '');
+        case 'hijacker3':
+          return String(pick(row, ['Hijacker 3', 'hijacker3']) ?? '');
+        case 'hijacker1Price':
+          return parseNumLoose(pick(row, ['Hijacker 1 Price', 'hijacker1Price']));
+        case 'hijacker2Price':
+          return parseNumLoose(pick(row, ['Hijacker 2 Price', 'hijacker2Price']));
+        case 'hijacker3Price':
+          return parseNumLoose(pick(row, ['Hijacker 3 Price', 'hijacker3Price']));
+        case 'hijacker1MOQ':
+          return parseNumLoose(pick(row, ['Hijacker 1 MOQ', 'hijacker1MOQ']));
+        case 'hijacker2MOQ':
+          return parseNumLoose(pick(row, ['Hijacker 2 MOQ', 'hijacker2MOQ']));
+        case 'hijacker3MOQ':
+          return parseNumLoose(pick(row, ['Hijacker 3 MOQ', 'hijacker3MOQ']));
+        case 'productSubCategory':
+          return String(pick(row, ['Product Sub Category', 'productSubCategory']) ?? '');
+        case 'vendorConfirmationPct':
+          return parseNumLoose(pick(row, ['Vendor Confirmation %', 'vendorConfirmationPct']));
+        case 'poReceivedAmount':
+          return parseNumLoose(pick(row, ['PO_received_amount', 'poReceivedAmount']));
+        case 'poReceivedUnits':
+          return parseNumLoose(pick(row, ['PO_received_Units', 'poReceivedUnits']));
+        case 'receiveFillRate':
+          return parseNumLoose(pick(row, ['Receive_Fill_Rate', 'receiveFillRate']));
+        case 'overallVendorLeadTimeDays':
+          return parseNumLoose(pick(row, ['Overall Vendor Lead Time (days)', 'overallVendorLeadTimeDays']));
+        case 'aged90PlusSellableInventory':
+          return parseNumLoose(pick(row, ['Aged 90+ Days Sellable Inventory', 'aged90PlusSellableInventory']));
+        case 'aged90PlusSellableUnits':
+          return parseNumLoose(pick(row, ['Aged 90+ Days Sellable Units', 'aged90PlusSellableUnits']));
+        case 'sellableInventoryAmount':
+          return parseNumLoose(pick(row, ['Sellable Inventory Amount', 'sellableInventoryAmount']));
+        case 'availableInventory':
+          return parseNumLoose(pick(row, ['Available Inventory', 'availableInventory']));
+        case 'unsellableOnHandInventoryAmount':
+          return parseNumLoose(pick(row, ['Unsellable On Hand Inventory Amount', 'unsellableOnHandInventoryAmount']));
+        case 'unsellableOnHandUnits':
+          return parseNumLoose(pick(row, ['Unsellable On Hand Units', 'unsellableOnHandUnits']));
+        case 'reportDate':
+          return normalizeReportDate(pick(row, ['Date', 'reportDate']));
+        case 'salesChannel':
+          return String(pick(row, ['Sales Channel', 'salesChannel', 'channel']) ?? '');
+        case 'inStockFlag':
+          return parseNumLoose(pick(row, ['in_stock_flag', 'inStockFlag']));
+        case 'cumulativeInstockDays':
+          return parseNumLoose(pick(row, ['cumulative_instock_days', 'cumulativeInstockDays']));
+        case 'dayOfMonth':
+          return parseNumLoose(pick(row, ['day_of_month', 'dayOfMonth']));
+        case 'instockRate':
+          return parseNumLoose(pick(row, ['Instock Rate', 'instockRate']));
+        case 'oosDate':
+          return normalizeReportDate(pick(row, ['OOS Date', 'oosDate']));
+        case 'totalUnits':
+          return parseNumLoose(pick(row, ['total_units', 'totalUnits']));
+        case 'sellThrough':
+          return parseNumLoose(pick(row, ['sell_through', 'sellThrough']));
+        case 'minAvailableQty':
+          return parseNumLoose(pick(row, ['min_available_qty', 'minAvailableQty']));
+        case 'maxAvailableQty':
+          return parseNumLoose(pick(row, ['max_available_qty', 'maxAvailableQty']));
+        case 'stockStatus':
+          return String(pick(row, ['Stock_Status', 'stockStatus']) ?? '');
+        case 'noLowStockWtOpenPOs':
+          return parseNumLoose(pick(row, ['No/Low Stock wt Open POs', 'noLowStockWtOpenPOs']));
+        case 'noLowStockWtNoOpenPOs':
+          return parseNumLoose(pick(row, ['No/Low Stock wt no Open POs', 'noLowStockWtNoOpenPOs']));
+        case 'asin':
+          return String(row?.asin ?? '');
+        case 'brand':
+          return String(pick(row, ['Brand', 'brand']) ?? '');
+        default:
+          return row?.[key];
+      }
+    };
+
+    const numericKeys = new Set([
+      'packSize',
+      'totalSales',
+      'totalSale',
+      'vcAvailableInventory',
+      'scAvailableInventory',
+      'openPOs',
+      'dos',
+      'scIdealPrice',
+      'vcIdealPrice',
+      'currentOwnerPrice',
+      'currentOwnerMOQ',
+      'hijacker1Price',
+      'hijacker2Price',
+      'hijacker3Price',
+      'hijacker1MOQ',
+      'hijacker2MOQ',
+      'hijacker3MOQ',
+      'vendorConfirmationPct',
+      'poReceivedAmount',
+      'poReceivedUnits',
+      'receiveFillRate',
+      'overallVendorLeadTimeDays',
+      'aged90PlusSellableInventory',
+      'aged90PlusSellableUnits',
+      'sellableInventoryAmount',
+      'availableInventory',
+      'unsellableOnHandInventoryAmount',
+      'unsellableOnHandUnits',
+      'inStockFlag',
+      'cumulativeInstockDays',
+      'dayOfMonth',
+      'instockRate',
+      'totalUnits',
+      'sellThrough',
+      'minAvailableQty',
+      'maxAvailableQty',
+      'noLowStockWtOpenPOs',
+      'noLowStockWtNoOpenPOs',
+    ]);
+
+    const compare = (a, b) => {
+      const av = getCellValue(a);
+      const bv = getCellValue(b);
+      const aEmpty = av == null || av === '' || (typeof av === 'number' && Number.isNaN(av));
+      const bEmpty = bv == null || bv === '' || (typeof bv === 'number' && Number.isNaN(bv));
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+
+      if (numericKeys.has(key)) {
+        const an = typeof av === 'number' ? av : parseNumLoose(av);
+        const bn = typeof bv === 'number' ? bv : parseNumLoose(bv);
+        if (an === bn) return 0;
+        return an < bn ? -1 : 1;
+      }
+
+      if (key === 'reportDate' || key === 'oosDate') {
+        const as = String(av);
+        const bs = String(bv);
+        if (as === bs) return 0;
+        return as < bs ? -1 : 1;
+      }
+
+      return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
+    };
+
+    const base = [...filteredRows];
+    base.sort((a, b) => {
+      const c = compare(a, b);
+      return dir === 'desc' ? -c : c;
+    });
+    return base;
+  }, [filteredRows, last30SalesByAsinMap, sort]);
+
   if (loading) return <div className="section-muted">Loading...</div>;
   if (error) return <div className="auth-error">{error}</div>;
 
-  const totalRows = filteredRows.length;
+  const totalRows = sortedRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
-  const pagedRows = filteredRows.slice(startIndex, endIndex);
+  const pagedRows = sortedRows.slice(startIndex, endIndex);
 
   const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
     ? String(latestUpdatedAtByChannel || updatedAt).split('T')[0]
@@ -754,6 +1056,48 @@ export default function Buybox() {
           z-index: 5;
           background: var(--card-bg, #fff);
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+
+        /* Buybox-only: sortable header button */
+        .buybox-table-wrap th .th-sort-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          width: 100%;
+          text-align: left;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          cursor: pointer;
+          color: inherit;
+          font: inherit;
+        }
+
+        .buybox-table-wrap th .th-sort-icons {
+          display: inline-flex;
+          flex-direction: row;
+          align-items: center;
+          line-height: 1;
+          font-size: 0.75rem;
+          gap: 2px;
+          user-select: none;
+        }
+
+        .buybox-table-wrap th .th-sort-icons span {
+          color: #9ca3af; /* grey for unselected */
+          font-weight: 700;
+        }
+
+        .buybox-table-wrap th .th-sort-icons .active {
+          color: #111827; /* black for active */
+          font-weight: 900;
+        }
+
+        .buybox-table-wrap th.th-sort-active .th-sort-btn > span:first-child {
+          color: var(--success, #16a34a);
         }
 
         /* Buybox table: keep Product Name/Category in one line */
@@ -959,7 +1303,33 @@ export default function Buybox() {
       </div>
 
       <div className="card">
-        <h3>Detailed Buybox View</h3>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            marginBottom: '0.35rem',
+          }}
+        >
+          <h3 style={{ margin: 0 }}>Detailed Buybox View</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+            <button
+              type="button"
+              className="btn-primary-soft"
+              onClick={downloadDetailedBuyboxCsv}
+              disabled={loading || csvDownloading}
+            >
+              {csvDownloading ? 'Preparing…' : 'Download CSV'}
+            </button>
+            {csvExportError ? (
+              <span className="section-muted" style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem' }}>
+                {csvExportError}
+              </span>
+            ) : null}
+          </div>
+        </div>
         <div className="filter-row filter-toggle-row">
           {STOCK_FILTERS.map((f) => (
             <button
@@ -1028,13 +1398,36 @@ export default function Buybox() {
                   const def = columnDefsById[id];
                   if (!def) return null;
                   if (!visibleColumns[id]) return null;
+                  const isSortable = id !== 'brand' && id !== 'asin';
                   const cls =
                     id === 'productName'
                       ? 'buybox-col-product-name'
                       : id === 'productCategory'
                         ? 'buybox-col-product-category'
                         : '';
-                  return <th key={id} className={cls}>{def.label}</th>;
+                  if (!isSortable) return <th key={id} className={cls}>{def.label}</th>;
+                  const isActive = sort?.key === id;
+                  const ascActive = isActive && sort?.dir === 'asc';
+                  const descActive = isActive && sort?.dir === 'desc';
+                  const thCls = [cls, isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const onSort = () => {
+                    setSort((prev) => {
+                      if (prev?.key !== id) return { key: id, dir: 'asc' };
+                      return { key: id, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                    });
+                    setPage(1);
+                  };
+                  return (
+                    <th key={id} className={thCls}>
+                      <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${def.label}`}>
+                        <span>{def.label}</span>
+                        <span className="th-sort-icons" aria-hidden>
+                          <span className={descActive ? 'active' : ''}>▼</span>
+                          <span className={ascActive ? 'active' : ''}>▲</span>
+                        </span>
+                      </button>
+                    </th>
+                  );
                 })}
               </tr>
             </thead>

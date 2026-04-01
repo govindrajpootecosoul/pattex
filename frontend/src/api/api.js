@@ -129,6 +129,37 @@ export const dashboardApi = {
     const query = q.toString();
     return request(`/dashboard/revenue${query ? `?${query}` : ''}`);
   },
+  /** Returns a Blob (text/csv). Caller triggers download; not JSON — do not use `request()`. */
+  downloadExecutiveAsinPerformanceCsv: async (params) => {
+    const q = new URLSearchParams();
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.deepDiveTab) q.set('deepDiveTab', params.deepDiveTab);
+    const token = localStorage.getItem('pattex_token');
+    const path = `/dashboard/executive-asin-performance-csv${q.toString() ? `?${q}` : ''}`;
+    let res;
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        method: 'GET',
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+        cache: 'no-store',
+      });
+    } catch (err) {
+      if (isNetworkError(err)) {
+        throw new Error('Cannot reach server. Start the backend with: cd backend && npm run dev');
+      }
+      throw err;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || res.statusText || 'CSV download failed');
+    }
+    return res.blob();
+  },
   getInventory: (params) => {
     const q = new URLSearchParams();
     if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);

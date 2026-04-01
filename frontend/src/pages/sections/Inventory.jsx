@@ -29,7 +29,6 @@ const INVENTORY_COLUMN_OPTIONS = [
   { id: 'dos', label: 'DOS' },
   { id: 'instockRate', label: 'Instock Rate' },
   { id: 'openPos', label: 'Open POs' },
-  { id: 'oosDate', label: 'OOS Date' },
   { id: 'status', label: 'Status' },
 ];
 
@@ -110,6 +109,12 @@ function truncateText(value, maxChars) {
   return `${s.slice(0, maxChars)}...`;
 }
 
+function csvEscape(field) {
+  const s = field == null ? '' : String(field);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 export default function Inventory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -140,7 +145,6 @@ export default function Inventory() {
     // Match initial date to current default channel (Seller Central).
     return new Date().toISOString().split('T')[0];
   });
-  const [comparison, setComparison] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState(() => {
     const defaults = {
       asin: true,
@@ -153,7 +157,6 @@ export default function Inventory() {
       dos: true,
       instockRate: true,
       openPos: true,
-      oosDate: true,
       status: true,
     };
     try {
@@ -194,8 +197,11 @@ export default function Inventory() {
   const dragColumnIdRef = useRef(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [csvDownloading, setCsvDownloading] = useState(false);
+  const [csvExportError, setCsvExportError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
+  const [sort, setSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
 
   useEffect(() => {
     setLoading(true);
@@ -212,12 +218,10 @@ export default function Inventory() {
       .then((data) => {
         const apiRows = Array.isArray(data.rows) ? data.rows : [];
         setRows(apiRows);
-        setComparison(data?.comparison ?? null);
         setUpdatedAt(data?.updatedAt ?? null);
       })
       .catch((e) => {
         setError(e.message);
-        setComparison(null);
       })
       .finally(() => setLoading(false));
   }, [selectedDate, filters.channel]);
@@ -357,127 +361,17 @@ export default function Inventory() {
 
   const summary = computeSummary(filteredRows);
 
-  // Last 30 days window (based on selectedDate) for total_sales aggregation
-  const rowsInLast30Days = useMemo(() => {
-    if (!selectedDate) return filteredRowsNoDate;
-    const end = new Date(selectedDate);
-    if (Number.isNaN(end.getTime())) return filteredRowsNoDate;
-    const start = new Date(end);
-    start.setDate(start.getDate() - 29); // inclusive 30-day window
-
-    return filteredRowsNoDate.filter((row) => {
-      const key = row.reportDate || normalizeDateKey(row.oosDate);
-      if (!key) return false;
-      const d = new Date(key);
-      if (Number.isNaN(d.getTime())) return false;
-      return d >= start && d <= end;
-    });
-  }, [filteredRowsNoDate, selectedDate]);
-
-  const summaryLast30 = useMemo(() => computeSummary(rowsInLast30Days), [rowsInLast30Days]);
-
+  // last30DaysSales on each row is summed on the server from Revenue for up to 30 days
+  // ending on selectedDate (only days that exist in Revenue are included).
   const last30SalesByAsin = useMemo(() => {
     const map = {};
-    rowsInLast30Days.forEach((row) => {
+    filteredRows.forEach((row) => {
       const asin = row.asin;
       if (!asin) return;
-      const sales = Number(row.last30DaysSales) || 0;
-      map[asin] = (map[asin] || 0) + sales;
+      map[asin] = Number(row.last30DaysSales) || 0;
     });
     return map;
-  }, [rowsInLast30Days]);
-
-  const kpiTrends = useMemo(() => {
-    const fallback = { value: '—', type: 'neutral' };
-    const fmt = (pct) => {
-      if (pct == null || Number.isNaN(pct)) return '—';
-      if (pct >= 0) return `↑${pct}%`;
-      return `↓${Math.abs(pct)}%`;
-    };
-    const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
-    if (!comparison) {
-      return { available: fallback, last30Sales: fallback, dos: fallback, instockRate: fallback };
-    }
-    return {
-      available: { value: fmt(comparison.available?.pctChange), type: type(comparison.available?.pctChange) },
-      last30Sales: { value: fmt(comparison.last30Sales?.pctChange), type: type(comparison.last30Sales?.pctChange) },
-      dos: { value: fmt(comparison.dos?.pctChange), type: type(comparison.dos?.pctChange) },
-      instockRate: { value: fmt(comparison.instockRate?.pctChange), type: type(comparison.instockRate?.pctChange) },
-    };
-  }, [comparison]);
-
-  // Dynamic week-over-week (WoW) trends based on actual dates (kept for any secondary use; cards use kpiTrends from API)
-  const rowsForTrend = filteredRows.filter(
-    (r) => r.oosDate && !Number.isNaN(new Date(r.oosDate).getTime()),
-  );
-
-  // When we really cannot compute WoW (no valid dates), treat as "New" instead of 0%
-  const defaultTrend = { value: 'New', type: 'positive' };
-  let metricTrends = {
-    available: defaultTrend,
-    last30Sales: defaultTrend,
-    dos: defaultTrend,
-    instockRate: defaultTrend,
-  };
-
-  if (rowsForTrend.length > 0) {
-    const parsed = rowsForTrend
-      .map((r) => ({ row: r, date: new Date(r.oosDate) }))
-      .filter(({ date }) => !Number.isNaN(date.getTime()));
-
-    if (parsed.length > 0) {
-      const maxDate = new Date(
-        Math.max.apply(
-          null,
-          parsed.map(({ date }) => date.getTime()),
-        ),
-      );
-
-      const startOfCurrent = new Date(maxDate);
-      startOfCurrent.setDate(startOfCurrent.getDate() - 6);
-
-      const endOfPrev = new Date(startOfCurrent);
-      endOfPrev.setDate(endOfPrev.getDate() - 1);
-
-      const startOfPrev = new Date(endOfPrev);
-      startOfPrev.setDate(startOfPrev.getDate() - 6);
-
-      const inRange = (d, start, end) => d >= start && d <= end;
-
-      const currentRows = parsed
-        .filter(({ date }) => inRange(date, startOfCurrent, maxDate))
-        .map(({ row }) => row);
-      const previousRows = parsed
-        .filter(({ date }) => inRange(date, startOfPrev, endOfPrev))
-        .map(({ row }) => row);
-
-      const currentSummary = computeSummary(currentRows);
-      const previousSummary = computeSummary(previousRows);
-
-      const makeWowTrend = (current, previous) => {
-        // If there is no previous data or it sums to 0, treat as "new"
-        if (!previous || previous === 0 || !Number.isFinite(previous)) {
-          return { value: 'New', type: 'positive' };
-        }
-        const diff = current - previous;
-        const pct = (diff / Math.abs(previous)) * 100;
-        if (!Number.isFinite(pct)) return defaultTrend;
-        const rounded = Math.round(pct);
-        const sign = rounded > 0 ? '+' : '';
-        let type = 'neutral';
-        if (rounded > 0) type = 'positive';
-        else if (rounded < 0) type = 'negative';
-        return { value: `${sign}${rounded}%`, type };
-      };
-
-      metricTrends = {
-        available: makeWowTrend(currentSummary.totalAvailable, previousSummary.totalAvailable),
-        last30Sales: makeWowTrend(currentSummary.last30Sales, previousSummary.last30Sales),
-        dos: makeWowTrend(currentSummary.avgDos, previousSummary.avgDos),
-        instockRate: makeWowTrend(currentSummary.instockRate, previousSummary.instockRate),
-      };
-    }
-  }
+  }, [filteredRows]);
 
   // Cascading filter handlers
   const handleCategoryChange = (e) => {
@@ -535,6 +429,70 @@ export default function Inventory() {
     const missing = INVENTORY_COLUMN_OPTIONS.map((c) => c.id).filter((id) => !orderedKnown.includes(id));
     return [...orderedKnown, ...missing];
   }, [columnOrder]);
+
+  const formatInventoryRowCsvValue = (columnId, row) => {
+    const salesVal =
+      last30SalesByAsin[row.asin] != null
+        ? last30SalesByAsin[row.asin]
+        : Number(row.last30DaysSales) || 0;
+    switch (columnId) {
+      case 'asin':
+        return row.asin ?? '—';
+      case 'productName':
+        return row.productName ?? '—';
+      case 'category':
+        return getRowProductCategory(row) || '—';
+      case 'packSize':
+        return row.packSize != null && String(row.packSize).trim() !== '' ? String(row.packSize) : '—';
+      case 'channel':
+        return row.channel ?? '—';
+      case 'available':
+        return String(row.available ?? '');
+      case 'sales30':
+        return `AED ${Math.round(salesVal).toLocaleString()}`;
+      case 'dos':
+        return String(row.dos ?? '');
+      case 'instockRate':
+        return `${row.instockRate ?? 0}%`;
+      case 'openPos':
+        return String(row.openPos ?? '');
+      case 'status':
+        return row.status || 'Active';
+      default:
+        return '';
+    }
+  };
+
+  const downloadDetailedInventoryCsv = () => {
+    setCsvExportError('');
+    setCsvDownloading(true);
+    try {
+      const activeCols = visibleOrderedColumnIds.filter((id) => visibleColumns[id]);
+      if (activeCols.length === 0) {
+        setCsvExportError('Select at least one column to export.');
+        return;
+      }
+      const header = activeCols.map((id) => csvEscape(columnDefsById[id]?.label || id)).join(',');
+      const lines = [header];
+      for (const row of filteredRows) {
+        lines.push(activeCols.map((id) => csvEscape(formatInventoryRowCsvValue(id, row))).join(','));
+      }
+      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeStock = String(stockFilter || 'ALL').replace(/[^a-z0-9_-]/gi, '_');
+      a.download = `inventory-detailed-${safeStock}-${selectedDate || 'date'}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
 
   const allColumnsSelected = useMemo(
     () => INVENTORY_COLUMN_OPTIONS.every((c) => !!visibleColumns[c.id]),
@@ -717,15 +675,78 @@ export default function Inventory() {
     );
   };
 
+  const sortedRows = useMemo(() => {
+    const dir = sort?.dir === 'desc' ? 'desc' : 'asc';
+    const key = sort?.key || 'productName';
+
+    const getSales30 = (row) =>
+      last30SalesByAsin[row.asin] != null ? last30SalesByAsin[row.asin] : Number(row.last30DaysSales) || 0;
+
+    const getCellValue = (row) => {
+      switch (key) {
+        case 'productName':
+          return row.productName ?? '';
+        case 'category':
+          return getRowProductCategory(row) ?? '';
+        case 'packSize':
+          return row.packSize;
+        case 'available':
+          return Number(row.available);
+        case 'sales30':
+          return Number(getSales30(row));
+        case 'dos':
+          return Number(row.dos);
+        case 'instockRate':
+          return Number(row.instockRate);
+        case 'openPos':
+          return Number(row.openPos);
+        default:
+          return row[key];
+      }
+    };
+
+    const isNumericKey = new Set(['packSize', 'available', 'sales30', 'dos', 'instockRate', 'openPos']).has(key);
+
+    const compare = (a, b) => {
+      const av = getCellValue(a);
+      const bv = getCellValue(b);
+
+      const aEmpty = av == null || av === '' || (typeof av === 'number' && Number.isNaN(av));
+      const bEmpty = bv == null || bv === '' || (typeof bv === 'number' && Number.isNaN(bv));
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+
+      if (isNumericKey) {
+        const an = Number(av);
+        const bn = Number(bv);
+        const diff = an - bn;
+        if (diff === 0) return 0;
+        return diff < 0 ? -1 : 1;
+      }
+
+      const as = String(av);
+      const bs = String(bv);
+      return as.localeCompare(bs, undefined, { sensitivity: 'base', numeric: true });
+    };
+
+    const base = [...filteredRows];
+    base.sort((a, b) => {
+      const c = compare(a, b);
+      return dir === 'desc' ? -c : c;
+    });
+    return base;
+  }, [filteredRows, last30SalesByAsin, sort]);
+
   if (loading) return <div className="section-muted">Loading...</div>;
   if (error) return <div className="auth-error">{error}</div>;
 
-  const totalRows = filteredRows.length;
+  const totalRows = sortedRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
-  const pagedRows = filteredRows.slice(startIndex, endIndex);
+  const pagedRows = sortedRows.slice(startIndex, endIndex);
 
   const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
     ? formatDateDDMonYY(String(latestUpdatedAtByChannel || updatedAt).split('T')[0])
@@ -752,6 +773,82 @@ export default function Inventory() {
           z-index: 5;
           background: var(--card-bg, #fff);
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+        }
+
+        /* Inventory-only: sortable header button */
+        .inventory-table-wrap th .th-sort-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          width: 100%;
+          text-align: left;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          cursor: pointer;
+          color: inherit;
+          font: inherit;
+        }
+
+        .inventory-table-wrap th.col-num .th-sort-btn {
+          justify-content: flex-end;
+        }
+
+        .inventory-table-wrap th .th-sort-icons {
+          display: inline-flex;
+          flex-direction: row;
+          align-items: center;
+          line-height: 1;
+          font-size: 0.75rem;
+          gap: 2px;
+          user-select: none;
+        }
+
+        .inventory-table-wrap th .th-sort-icons span {
+          color: #9ca3af; /* grey for unselected */
+          font-weight: 700;
+        }
+
+        .inventory-table-wrap th .th-sort-icons .active {
+          color: #111827; /* black for active */
+          font-weight: 900;
+        }
+
+        /* Inventory-only: highlight active sort column in green */
+        .inventory-table-wrap th.th-sort-active .th-sort-btn > span:first-child {
+          color: var(--success, #16a34a);
+        }
+
+        .inventory-table-wrap th.th-sort-active .th-sort-icons .active {
+          color: #111827;
+        }
+
+        /* Inventory-only: status colors */
+        .inventory-table-wrap .badge.badge-overstock {
+          background: #fff3e0;
+          color: #e65100;
+          border: 1px solid #ffcc80;
+          box-shadow: none;
+          filter: none;
+        }
+
+        .inventory-table-wrap .badge.badge-healthy {
+          background: #e8f5e9;
+          color: #1b5e20;
+          border: 1px solid #a5d6a7;
+          box-shadow: none;
+          filter: none;
+        }
+
+        .inventory-table-wrap .badge.badge-understock {
+          background: #ffebee;
+          color: #b71c1c;
+          border: 1px solid #ef9a9a;
+          box-shadow: none;
+          filter: none;
         }
 
         /* Inventory table: keep Product Name in one line + wider */
@@ -883,11 +980,7 @@ export default function Inventory() {
             <div className="label">Available Inventory</div>
             <div className="value value-primary">
               {summary.totalAvailable.toLocaleString()}
-              <span className={`kpi-trend-inline ${kpiTrends.available.type === 'negative' ? 'negative' : kpiTrends.available.type === 'neutral' ? 'neutral' : ''}`}>
-                ({kpiTrends.available.value})
-              </span>
             </div>
-            <div className="value-secondary">vs last period</div>
           </button>
           <button
             type="button"
@@ -896,12 +989,8 @@ export default function Inventory() {
           >
             <div className="label">Last 30 Days Sales</div>
             <div className="value value-primary">
-              AED {Math.round(summaryLast30.last30Sales).toLocaleString()}
-              <span className={`kpi-trend-inline ${kpiTrends.last30Sales.type === 'negative' ? 'negative' : kpiTrends.last30Sales.type === 'neutral' ? 'neutral' : ''}`}>
-                ({kpiTrends.last30Sales.value})
-              </span>
+              AED {Math.round(summary.last30Sales).toLocaleString()}
             </div>
-            <div className="value-secondary">vs last period (AED)</div>
           </button>
           <button
             type="button"
@@ -911,11 +1000,7 @@ export default function Inventory() {
             <div className="label">Avg. Days of Supply</div>
             <div className="value value-primary">
               {summary.avgDos}
-              <span className={`kpi-trend-inline ${kpiTrends.dos.type === 'negative' ? 'negative' : kpiTrends.dos.type === 'neutral' ? 'neutral' : ''}`}>
-                ({kpiTrends.dos.value})
-              </span>
             </div>
-            <div className="value-secondary">vs last period</div>
           </button>
           <button
             type="button"
@@ -925,17 +1010,39 @@ export default function Inventory() {
             <div className="label">Instock Rate</div>
             <div className="value value-primary">
               {summary.instockRate}%
-              <span className={`kpi-trend-inline ${kpiTrends.instockRate.type === 'negative' ? 'negative' : kpiTrends.instockRate.type === 'neutral' ? 'neutral' : ''}`}>
-                ({kpiTrends.instockRate.value})
-              </span>
             </div>
-            <div className="value-secondary">vs last period</div>
           </button>
         </div>
       </div>
 
       <div className="card">
-        <h3>Detailed Inventory Report</h3>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            marginBottom: '0.35rem',
+          }}
+        >
+          <h3 style={{ margin: 0 }}>Detailed Inventory Report</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+            <button
+              type="button"
+              className="btn-primary-soft"
+              onClick={downloadDetailedInventoryCsv}
+              disabled={loading || csvDownloading}
+            >
+              {csvDownloading ? 'Preparing…' : 'Download CSV'}
+            </button>
+            {csvExportError ? (
+              <span className="section-muted" style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem' }}>
+                {csvExportError}
+              </span>
+            ) : null}
+          </div>
+        </div>
         <div className="filter-row filter-toggle-row">
           {STOCK_FILTERS.map((f) => (
             <button
@@ -1005,7 +1112,7 @@ export default function Inventory() {
                   const col = columnDefsById[id];
                   if (!col) return null;
                   const numCols = new Set(['available', 'sales30', 'dos', 'instockRate', 'openPos']);
-                  const cls =
+                  const baseCls =
                     id === 'productName'
                       ? 'inventory-col-product-name'
                       : id === 'category'
@@ -1013,7 +1120,34 @@ export default function Inventory() {
                         : numCols.has(id)
                           ? 'col-num'
                           : '';
-                  return <th key={id} className={cls}>{col.label}</th>;
+                  const isSortable = new Set(['productName', 'category', 'packSize', 'available', 'sales30', 'dos', 'instockRate', 'openPos']).has(id);
+                  const isActive = sort?.key === id;
+                  const ascActive = isActive && sort?.dir === 'asc';
+                  const descActive = isActive && sort?.dir === 'desc';
+                  const activeSortCls = isActive ? 'th-sort-active' : '';
+                  const cls = [baseCls, activeSortCls].filter(Boolean).join(' ');
+                  const onSort = () => {
+                    if (!isSortable) return;
+                    setSort((prev) => {
+                      if (prev?.key !== id) return { key: id, dir: 'asc' };
+                      return { key: id, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                    });
+                    setPage(1);
+                  };
+
+                  if (!isSortable) return <th key={id} className={cls}>{col.label}</th>;
+
+                  return (
+                    <th key={id} className={cls}>
+                      <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${col.label}`}>
+                        <span>{col.label}</span>
+                        <span className="th-sort-icons" aria-hidden>
+                          <span className={descActive ? 'active' : ''}>▼</span>
+                          <span className={ascActive ? 'active' : ''}>▲</span>
+                        </span>
+                      </button>
+                    </th>
+                  );
                 })}
                 <th className="cell-actions" aria-label="Actions" />
               </tr>
@@ -1063,7 +1197,6 @@ export default function Inventory() {
                     if (id === 'dos') return <td key={id} className="col-num">{row.dos}</td>;
                     if (id === 'instockRate') return <td key={id} className="col-num">{row.instockRate}%</td>;
                     if (id === 'openPos') return <td key={id} className="col-num">{row.openPos}</td>;
-                    if (id === 'oosDate') return <td key={id}>{row.oosDate ? formatDateDDMonYY(row.oosDate) : row.oosDate}</td>;
                     if (id === 'status') {
                       return (
                         <td key={id}>

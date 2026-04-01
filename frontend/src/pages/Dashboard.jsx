@@ -3,13 +3,20 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import './Dashboard.css';
 
+import executiveIcon from '../icons/executive.svg';
+import revenueIcon from '../icons/revenue.svg';
+import inventoryIcon from '../icons/inventory.svg';
+import buyboxIcon from '../icons/buybox.svg';
+import marketingIcon from '../icons/marketing.svg';
+import profileIcon from '../icons/profile.svg';
+
 const navItems = [
-  { path: 'executive-summary', label: 'Executive Summary', icon: '📊' },
-  { path: 'revenue', label: 'Revenue', icon: '💰' },
-  { path: 'inventory', label: 'Inventory', icon: '📦' },
-  { path: 'buybox', label: 'Buybox', icon: '🛒' },
-  { path: 'marketing', label: 'Marketing', icon: '📢' },
-  { path: 'profile', label: 'Profile', icon: '👤' },
+  { path: 'executive-summary', label: 'Executive Summary', icon: executiveIcon },
+  { path: 'revenue', label: 'Revenue', icon: revenueIcon },
+  { path: 'inventory', label: 'Inventory', icon: inventoryIcon },
+  { path: 'buybox', label: 'Buybox', icon: buyboxIcon },
+  { path: 'marketing', label: 'Marketing', icon: marketingIcon },
+  { path: 'profile', label: 'Profile', icon: profileIcon },
 ];
 
 export default function Dashboard() {
@@ -42,7 +49,16 @@ export default function Dashboard() {
         <nav className="sidebar-nav">
           {navItems.map(({ path, label, icon }) => (
             <NavLink key={path} to={path} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-              <span className="nav-icon">{icon}</span>
+              <span className="nav-icon" aria-hidden="true">
+                <img
+                  src={icon}
+                  alt=""
+                  width={20}
+                  height={20}
+                  style={{ display: 'block' }}
+                  loading="eager"
+                />
+              </span>
               {sidebarOpen && <span className="nav-label">{label}</span>}
             </NavLink>
           ))}

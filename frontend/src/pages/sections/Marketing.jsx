@@ -1,9 +1,15 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Bar } from 'recharts';
 import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
 import { useSalesChannels } from '../../hooks/useSalesChannels';
+
+function csvEscape(field) {
+  const s = field == null ? '' : String(field);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
 
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
@@ -251,6 +257,9 @@ const CAMPAIGN_GROUP_FILTERS = [
   { id: 'WORST_REVENUE', label: 'Top 10 Worst Campaigns - Revenue' },
 ];
 
+const MARKETING_SKU_OTHER_COLUMN_ORDER_STORAGE_KEY = 'pattex.marketing.sku.otherColumnOrder.v1';
+const MARKETING_CAMPAIGN_OTHER_COLUMN_ORDER_STORAGE_KEY = 'pattex.marketing.campaign.otherColumnOrder.v1';
+
 function Skeleton({ width = '100%', height = 12, style }) {
   return (
     <div
@@ -293,23 +302,69 @@ export default function Marketing() {
   });
   const [skuGroupFilter, setSkuGroupFilter] = useState('');
   const [skuViewOtherColumns, setSkuViewOtherColumns] = useState(
-    OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: false }), {}),
+    OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: true }), {}),
   );
   const [campaignOtherColumns, setCampaignOtherColumns] = useState(
-    OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: false }), {}),
+    OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: true }), {}),
   );
   const [campaignDetailOtherColumns, setCampaignDetailOtherColumns] = useState(
-    CAMPAIGN_DETAIL_OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: false }), {}),
+    CAMPAIGN_DETAIL_OTHER_COLUMNS.reduce((acc, col) => ({ ...acc, [col]: true }), {}),
   );
+  const [skuOtherColumnOrder, setSkuOtherColumnOrder] = useState(() => {
+    try {
+      const raw = localStorage.getItem(MARKETING_SKU_OTHER_COLUMN_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+        const known = OTHER_COLUMNS;
+        const base = parsed.filter((id) => known.includes(id));
+        known.forEach((id) => {
+          if (!base.includes(id)) base.push(id);
+        });
+        return base;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return [...OTHER_COLUMNS];
+  });
+  const [campaignOtherColumnOrder, setCampaignOtherColumnOrder] = useState(() => {
+    try {
+      const raw = localStorage.getItem(MARKETING_CAMPAIGN_OTHER_COLUMN_ORDER_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+        const known = CAMPAIGN_DETAIL_OTHER_COLUMNS;
+        const base = parsed.filter((id) => known.includes(id));
+        known.forEach((id) => {
+          if (!base.includes(id)) base.push(id);
+        });
+        return base;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return [...CAMPAIGN_DETAIL_OTHER_COLUMNS];
+  });
   const [campaignGroupFilter, setCampaignGroupFilter] = useState('');
   const [showCampaignDetailColumnPicker, setShowCampaignDetailColumnPicker] = useState(false);
   const [showSkuViewColumnPicker, setShowSkuViewColumnPicker] = useState(false);
+  const skuColumnPickerWrapRef = useRef(null);
+  const skuSelectAllRef = useRef(null);
+  const skuDragColumnIdRef = useRef(null);
+  const campaignColumnPickerWrapRef = useRef(null);
+  const campaignSelectAllRef = useRef(null);
+  const campaignDragColumnIdRef = useRef(null);
   const [performanceCards, setPerformanceCards] = useState(['adSpend', 'overallRevenue', 'tacos', 'organicUnitSold']);
   const [campaignPerformanceCards, setCampaignPerformanceCards] = useState(['adSpend', 'overallRevenue', 'clicks', 'impressions']);
   const [skuPage, setSkuPage] = useState(1);
   const [skuPageSize, setSkuPageSize] = useState(20);
+  const [skuCsvDownloading, setSkuCsvDownloading] = useState(false);
+  const [skuCsvExportError, setSkuCsvExportError] = useState('');
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [showProcessing, setShowProcessing] = useState(false);
+  const [campaignCsvDownloading, setCampaignCsvDownloading] = useState(false);
+  const [campaignCsvExportError, setCampaignCsvExportError] = useState('');
+  const [skuSort, setSkuSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
+  const [campaignSort, setCampaignSort] = useState({ key: 'campaignName', dir: 'asc' }); // default: Campaign Name A-Z
 
   useEffect(() => {
     setLoading(true);
@@ -554,6 +609,156 @@ export default function Marketing() {
     setCampaignDetailOtherColumns((prev) => ({ ...prev, [col]: !prev[col] }));
   };
 
+  const visibleOrderedSkuOtherColumns = useMemo(() => {
+    const known = new Set(OTHER_COLUMNS);
+    const orderedKnown = skuOtherColumnOrder.filter((c) => known.has(c));
+    const missing = OTHER_COLUMNS.filter((c) => !orderedKnown.includes(c));
+    return [...orderedKnown, ...missing].filter((c) => !!skuViewOtherColumns[c]);
+  }, [skuOtherColumnOrder, skuViewOtherColumns]);
+
+  const visibleOrderedCampaignOtherColumns = useMemo(() => {
+    const known = new Set(CAMPAIGN_DETAIL_OTHER_COLUMNS);
+    const orderedKnown = campaignOtherColumnOrder.filter((c) => known.has(c));
+    const missing = CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => !orderedKnown.includes(c));
+    return [...orderedKnown, ...missing].filter((c) => !!campaignDetailOtherColumns[c]);
+  }, [campaignOtherColumnOrder, campaignDetailOtherColumns]);
+
+  const allSkuOtherSelected = useMemo(
+    () => OTHER_COLUMNS.every((c) => !!skuViewOtherColumns[c]),
+    [skuViewOtherColumns],
+  );
+  const someSkuOtherSelected = useMemo(
+    () => OTHER_COLUMNS.some((c) => !!skuViewOtherColumns[c]),
+    [skuViewOtherColumns],
+  );
+  useEffect(() => {
+    if (!skuSelectAllRef.current) return;
+    skuSelectAllRef.current.indeterminate = someSkuOtherSelected && !allSkuOtherSelected;
+  }, [someSkuOtherSelected, allSkuOtherSelected]);
+
+  const toggleAllSkuOtherColumns = () => {
+    setSkuViewOtherColumns((prev) => {
+      const shouldEnableAll = !OTHER_COLUMNS.every((c) => !!prev[c]);
+      const next = { ...prev };
+      OTHER_COLUMNS.forEach((c) => { next[c] = shouldEnableAll; });
+      return next;
+    });
+  };
+
+  const allCampaignOtherSelected = useMemo(
+    () => CAMPAIGN_DETAIL_OTHER_COLUMNS.every((c) => !!campaignDetailOtherColumns[c]),
+    [campaignDetailOtherColumns],
+  );
+  const someCampaignOtherSelected = useMemo(
+    () => CAMPAIGN_DETAIL_OTHER_COLUMNS.some((c) => !!campaignDetailOtherColumns[c]),
+    [campaignDetailOtherColumns],
+  );
+  useEffect(() => {
+    if (!campaignSelectAllRef.current) return;
+    campaignSelectAllRef.current.indeterminate = someCampaignOtherSelected && !allCampaignOtherSelected;
+  }, [someCampaignOtherSelected, allCampaignOtherSelected]);
+
+  const toggleAllCampaignOtherColumns = () => {
+    setCampaignDetailOtherColumns((prev) => {
+      const shouldEnableAll = !CAMPAIGN_DETAIL_OTHER_COLUMNS.every((c) => !!prev[c]);
+      const next = { ...prev };
+      CAMPAIGN_DETAIL_OTHER_COLUMNS.forEach((c) => { next[c] = shouldEnableAll; });
+      return next;
+    });
+  };
+
+  const onSkuOtherDragStart = (id) => { skuDragColumnIdRef.current = id; };
+  const onSkuOtherDrop = (targetId) => {
+    const sourceId = skuDragColumnIdRef.current;
+    skuDragColumnIdRef.current = null;
+    if (!sourceId || sourceId === targetId) return;
+    setSkuOtherColumnOrder((prev) => {
+      const known = OTHER_COLUMNS;
+      const base = [...new Set([...(Array.isArray(prev) ? prev : []).filter((id) => known.includes(id)), ...known])];
+      const from = base.indexOf(sourceId);
+      const to = base.indexOf(targetId);
+      if (from === -1 || to === -1) return base;
+      base.splice(from, 1);
+      base.splice(to, 0, sourceId);
+      return base;
+    });
+  };
+
+  const onCampaignOtherDragStart = (id) => { campaignDragColumnIdRef.current = id; };
+  const onCampaignOtherDrop = (targetId) => {
+    const sourceId = campaignDragColumnIdRef.current;
+    campaignDragColumnIdRef.current = null;
+    if (!sourceId || sourceId === targetId) return;
+    setCampaignOtherColumnOrder((prev) => {
+      const known = CAMPAIGN_DETAIL_OTHER_COLUMNS;
+      const base = [...new Set([...(Array.isArray(prev) ? prev : []).filter((id) => known.includes(id)), ...known])];
+      const from = base.indexOf(sourceId);
+      const to = base.indexOf(targetId);
+      if (from === -1 || to === -1) return base;
+      base.splice(from, 1);
+      base.splice(to, 0, sourceId);
+      return base;
+    });
+  };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MARKETING_SKU_OTHER_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(skuOtherColumnOrder));
+    } catch {
+      // ignore storage errors
+    }
+  }, [skuOtherColumnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MARKETING_CAMPAIGN_OTHER_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(campaignOtherColumnOrder));
+    } catch {
+      // ignore storage errors
+    }
+  }, [campaignOtherColumnOrder]);
+
+  useEffect(() => {
+    if (!showSkuViewColumnPicker) return;
+    const onPointerDown = (e) => {
+      const el = skuColumnPickerWrapRef.current;
+      if (!el) return;
+      if (el.contains(e.target)) return;
+      setShowSkuViewColumnPicker(false);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setShowSkuViewColumnPicker(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showSkuViewColumnPicker]);
+
+  useEffect(() => {
+    if (!showCampaignDetailColumnPicker) return;
+    const onPointerDown = (e) => {
+      const el = campaignColumnPickerWrapRef.current;
+      if (!el) return;
+      if (el.contains(e.target)) return;
+      setShowCampaignDetailColumnPicker(false);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') setShowCampaignDetailColumnPicker(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showCampaignDetailColumnPicker]);
+
   const funnelMetricsData = useMemo(() => {
     const fmtInt = (n) => (n == null || !Number.isFinite(n) ? '—' : Math.round(n).toLocaleString());
     const fmtAed = (n) =>
@@ -685,12 +890,127 @@ export default function Marketing() {
     return base;
   }, [skuRows, skuGroupFilter]);
 
-  const skuTotal = displayedSkuRows.length;
+  const sortedSkuRows = useMemo(() => {
+    const dir = skuSort?.dir === 'desc' ? 'desc' : 'asc';
+    const key = skuSort?.key || 'productName';
+
+    const getCellValue = (row) => {
+      if (!row) return null;
+      if (key === 'Date') return row?.Date ? String(row.Date).slice(0, 10) : '';
+      const v = row?.[key];
+      return v == null ? '' : v;
+    };
+
+    const numericKeys = new Set([
+      'availableInventory',
+      'last30Sales',
+      'dos',
+      'impressions',
+      'clicks',
+      'CTR',
+      'CPC',
+      'CVR',
+      'Ad Spend',
+      'Ad Unit Sold',
+      'Ad Sales',
+      'ACoS',
+      'Overall Unit Sold',
+      'Overall Revenue',
+      'TACOS',
+      'Organic Unit Sold',
+      'Organic Revenue',
+      'NTB Unit Sold',
+      'NTB Revenue',
+    ]);
+
+    const toNum = (val) => {
+      if (val == null || val === '') return NaN;
+      if (typeof val === 'number') return val;
+      const cleaned = String(val).replace(/,/g, '').replace(/[^0-9.\-]+/g, '').trim();
+      if (!cleaned) return NaN;
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : NaN;
+    };
+
+    const compare = (a, b) => {
+      const av = getCellValue(a);
+      const bv = getCellValue(b);
+      const aEmpty = av == null || av === '' || (typeof av === 'number' && Number.isNaN(av));
+      const bEmpty = bv == null || bv === '' || (typeof bv === 'number' && Number.isNaN(bv));
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+
+      if (numericKeys.has(key)) {
+        const an = toNum(av);
+        const bn = toNum(bv);
+        const aBad = Number.isNaN(an);
+        const bBad = Number.isNaN(bn);
+        if (aBad && bBad) return 0;
+        if (aBad) return 1;
+        if (bBad) return -1;
+        if (an === bn) return 0;
+        return an < bn ? -1 : 1;
+      }
+
+      return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
+    };
+
+    const base = [...displayedSkuRows];
+    base.sort((a, b) => {
+      const c = compare(a, b);
+      return dir === 'desc' ? -c : c;
+    });
+    return base;
+  }, [displayedSkuRows, skuSort]);
+
+  const skuTotal = sortedSkuRows.length;
   const skuPageCount = Math.max(1, Math.ceil(skuTotal / skuPageSize));
   const safeSkuPage = Math.min(skuPage, skuPageCount);
   const skuStart = (safeSkuPage - 1) * skuPageSize;
   const skuEnd = skuStart + skuPageSize;
-  const pagedSkuRows = displayedSkuRows.slice(skuStart, skuEnd);
+  const pagedSkuRows = sortedSkuRows.slice(skuStart, skuEnd);
+
+  const downloadSkuMarketingCsv = () => {
+    setSkuCsvExportError('');
+    setSkuCsvDownloading(true);
+    try {
+      const baseCols = SKU_TABLE_COLUMNS.map((c) => c.id);
+      const otherCols = OTHER_COLUMNS.filter((c) => skuViewOtherColumns[c]);
+      const allCols = [...baseCols, ...otherCols];
+      const header = [
+        ...SKU_TABLE_COLUMNS.map((c) => c.label),
+        ...otherCols,
+      ]
+        .map(csvEscape)
+        .join(',');
+      const lines = [header];
+      sortedSkuRows.forEach((row) => {
+        const values = allCols.map((colId) => {
+          if (colId === 'Date') {
+            return row?.Date ? formatDateDDMonYY(row.Date) : '—';
+          }
+          const v = row?.[colId];
+          return v == null ? '—' : v;
+        });
+        lines.push(values.map(csvEscape).join(','));
+      });
+      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeGroup = String(skuGroupFilter || 'ALL').replace(/[^a-z0-9_-]/gi, '_');
+      a.download = `marketing-sku-detailed-${safeGroup}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setSkuCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setSkuCsvDownloading(false);
+    }
+  };
 
   const campaignMetrics = data && !data.comingSoon && data.campaignMetrics ? data.campaignMetrics : {};
   const campaignAdSpend = campaignMetrics.adSpend ?? '—';
@@ -859,6 +1179,99 @@ export default function Marketing() {
     campaignGroupFilter,
   ]);
 
+  const sortedCampaignRows = useMemo(() => {
+    const dir = campaignSort?.dir === 'desc' ? 'desc' : 'asc';
+    const key = campaignSort?.key || 'campaignName';
+
+    const getCellValue = (row) => {
+      if (!row) return null;
+      switch (key) {
+        case 'campaignType':
+          return row?.campaignType ?? '';
+        case 'campaignName':
+          return row?.campaignName ?? '';
+        case 'Impressions':
+          return readNumber(row, ['impressions', 'Impressions']);
+        case 'Clicks':
+          return readNumber(row, ['clicks', 'Clicks']);
+        case 'CTR':
+          return readNumber(row, ['CTR', 'ctr', 'click_thru_rate_(ctr)', 'click_thru_rate', 'click_through_rate']);
+        case 'CPC':
+          return readNumber(row, ['CPC', 'cpc', 'cost_per_click_(cpc)', 'cost_per_click', 'costPerClick']);
+        case 'CVR':
+          return readNumber(row, ['CVR', 'cvr', 'conversion_rate', 'cvr_(%)', 'cvr%']);
+        case 'Ad Spend':
+          return readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+        case 'Ad Unit Sold':
+          return readNumber(row, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold', 'ad_unit_sold']);
+        case 'Ad Sales':
+          return readNumber(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']);
+        default: {
+          const direct =
+            readFirst(row, [key]) ??
+            (key === 'TACOS' ? readFirst(row, ['TACoS', 'tacos']) : undefined);
+          if (direct != null) {
+            const num = typeof direct === 'number' ? direct : Number(String(direct).replace(/,/g, '').replace(/[^0-9.\-]+/g, '').trim());
+            return Number.isFinite(num) ? num : String(direct);
+          }
+          if (key === 'TACOS') {
+            const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+            const rev = readNumber(row, ['Overall Revenue', 'overallRevenue', 'total_sales', 'totalSales', 'sales']);
+            if (spend != null && rev != null && rev > 0) return (spend / rev) * 100;
+          }
+          if (key === 'ACoS') {
+            const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+            const adSales = readNumber(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']);
+            if (spend != null && adSales != null && adSales > 0) return (spend / adSales) * 100;
+          }
+          return '';
+        }
+      }
+    };
+
+    const numericKeys = new Set([
+      'Impressions',
+      'Clicks',
+      'CTR',
+      'CPC',
+      'CVR',
+      'Ad Spend',
+      'Ad Unit Sold',
+      'Ad Sales',
+      ...CAMPAIGN_DETAIL_OTHER_COLUMNS,
+    ]);
+
+    const compare = (a, b) => {
+      const av = getCellValue(a);
+      const bv = getCellValue(b);
+      const aEmpty = av == null || av === '' || (typeof av === 'number' && Number.isNaN(av));
+      const bEmpty = bv == null || bv === '' || (typeof bv === 'number' && Number.isNaN(bv));
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+
+      if (numericKeys.has(key)) {
+        const an = Number(av);
+        const bn = Number(bv);
+        const aBad = Number.isNaN(an);
+        const bBad = Number.isNaN(bn);
+        if (aBad && bBad) return 0;
+        if (aBad) return 1;
+        if (bBad) return -1;
+        if (an === bn) return 0;
+        return an < bn ? -1 : 1;
+      }
+      return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
+    };
+
+    const base = [...filteredCampaignRows];
+    base.sort((a, b) => {
+      const c = compare(a, b);
+      return dir === 'desc' ? -c : c;
+    });
+    return base;
+  }, [filteredCampaignRows, campaignSort]);
+
   const handleDownloadCampaignData = () => {
     if (!filteredCampaignRows.length) return;
     const rows = filteredCampaignRows;
@@ -886,6 +1299,75 @@ export default function Marketing() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const downloadCampaignMarketingCsv = () => {
+    setCampaignCsvExportError('');
+    setCampaignCsvDownloading(true);
+    try {
+      const otherCols = CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]);
+      const headerCols = [
+        'Campaign Type',
+        'Campaign Name',
+        'Impressions',
+        'Clicks',
+        'CTR',
+        'CPC',
+        'CVR',
+        'Ad Spend',
+        'Ad Unit Sold',
+        'Ad Sales',
+        ...otherCols,
+      ];
+      const lines = [headerCols.map(csvEscape).join(',')];
+      sortedCampaignRows.forEach((row) => {
+        const base = [
+          row?.campaignType ?? '—',
+          row?.campaignName ?? '—',
+          formatCampaignTableCell('Impressions', readFirst(row, ['impressions', 'Impressions'])),
+          formatCampaignTableCell('Clicks', readFirst(row, ['clicks', 'Clicks'])),
+          formatCampaignTableCell('CTR', readFirst(row, ['CTR', 'ctr', 'click_thru_rate_(ctr)', 'click_thru_rate', 'click_through_rate'])),
+          formatCampaignTableCell('CPC', readFirst(row, ['CPC', 'cpc', 'cost_per_click_(cpc)', 'cost_per_click', 'costPerClick'])),
+          formatCampaignTableCell('CVR', readFirst(row, ['CVR', 'cvr', 'conversion_rate', 'cvr_(%)', 'cvr%'])),
+          formatCampaignTableCell('Ad Spend', readFirst(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend'])),
+          formatCampaignTableCell('Ad Unit Sold', readFirst(row, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold', 'ad_unit_sold'])),
+          formatCampaignTableCell('Ad Sales', readFirst(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales'])),
+        ];
+        const extra = otherCols.map((col) => {
+          const direct =
+            readFirst(row, [col]) ??
+            (col === 'TACOS' ? readFirst(row, ['TACoS', 'tacos']) : undefined);
+          if (direct != null) return formatCampaignTableCell(col, direct);
+
+          if (col === 'TACOS') {
+            const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+            const rev = readNumber(row, ['Overall Revenue', 'overallRevenue', 'total_sales', 'totalSales', 'sales']);
+            if (spend != null && rev != null && rev > 0) return formatCampaignTableCell(col, (spend / rev) * 100);
+          }
+          if (col === 'ACoS') {
+            const spend = readNumber(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+            const adSales = readNumber(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']);
+            if (spend != null && adSales != null && adSales > 0) return formatCampaignTableCell(col, (spend / adSales) * 100);
+          }
+          return formatCampaignTableCell(col, undefined);
+        });
+        lines.push([...base, ...extra].map(csvEscape).join(','));
+      });
+      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeGroup = String(campaignGroupFilter || 'ALL').replace(/[^a-z0-9_-]/gi, '_');
+      a.download = `marketing-campaign-detailed-${safeGroup}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCampaignCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setCampaignCsvDownloading(false);
+    }
   };
 
   const getPerformanceMetricConfig = (id) =>
@@ -1007,6 +1489,53 @@ export default function Marketing() {
       <style>
         {`@keyframes pattex-skeleton { 0% { background-position: 0% 0%; } 100% { background-position: 200% 0%; } }`}
       </style>
+      <style>{`
+        /* Marketing: sortable header button (SKU + Campaign tables) */
+        .marketing-sort-table th .th-sort-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          width: 100%;
+          text-align: left;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          cursor: pointer;
+          color: inherit;
+          font: inherit;
+        }
+
+        .marketing-sort-table th.col-num .th-sort-btn {
+          justify-content: flex-end;
+        }
+
+        .marketing-sort-table th .th-sort-icons {
+          display: inline-flex;
+          flex-direction: row;
+          align-items: center;
+          line-height: 1;
+          font-size: 0.75rem;
+          gap: 2px;
+          user-select: none;
+        }
+
+        .marketing-sort-table th .th-sort-icons span {
+          color: #9ca3af; /* grey for unselected */
+          font-weight: 700;
+        }
+
+        .marketing-sort-table th .th-sort-icons .active {
+          color: #111827; /* black for active */
+          font-weight: 900;
+        }
+
+        .marketing-sort-table th.th-sort-active .th-sort-btn > span:first-child {
+          color: var(--success, #16a34a);
+        }
+      `}</style>
 
       <div className="card marketing-filters-card">
         {error && (
@@ -1493,7 +2022,33 @@ export default function Marketing() {
 
       {/* Detailed SKU Level Marketing View */}
       <div className="card">
-        <h3>Detailed SKU Level Marketing View</h3>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            marginBottom: '0.35rem',
+          }}
+        >
+          <h3 style={{ margin: 0 }}>Detailed SKU Level Marketing View</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+            <button
+              type="button"
+              className="btn-primary-soft"
+              onClick={downloadSkuMarketingCsv}
+              disabled={showProcessing || isProcessing || skuCsvDownloading}
+            >
+              {skuCsvDownloading ? 'Preparing…' : 'Download CSV'}
+            </button>
+            {skuCsvExportError ? (
+              <span className="section-muted" style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem' }}>
+                {skuCsvExportError}
+              </span>
+            ) : null}
+          </div>
+        </div>
         <div className="filter-toggle-row marketing-sku-toolbar">
           <div className="marketing-sku-toolbar-left">
             {SKU_GROUP_FILTERS.map((f) => (
@@ -1511,18 +2066,39 @@ export default function Marketing() {
             ))}
           </div>
           <div className="marketing-sku-toolbar-right">
-            <div className="column-picker-wrap">
+            <div className="column-picker-wrap" ref={skuColumnPickerWrapRef}>
               <button
                 type="button"
                 className="btn-chip"
                 onClick={() => setShowSkuViewColumnPicker((v) => !v)}
               >
-                Columns
+                Other Columns
               </button>
               {showSkuViewColumnPicker && (
                 <div className="column-picker">
-                  {OTHER_COLUMNS.map((col) => (
-                    <label key={col} className="column-picker-item">
+                  <label key="__select_all__" className="column-picker-item">
+                    <input
+                      ref={skuSelectAllRef}
+                      type="checkbox"
+                      checked={allSkuOtherSelected}
+                      onChange={toggleAllSkuOtherColumns}
+                    />
+                    Select all
+                  </label>
+                  <div style={{ margin: '6px 0 10px', fontSize: 12, opacity: 0.8 }}>
+                    Drag a row to reorder columns.
+                  </div>
+                  {skuOtherColumnOrder.map((col) => (
+                    <label
+                      key={col}
+                      className="column-picker-item"
+                      draggable
+                      onDragStart={() => onSkuOtherDragStart(col)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => onSkuOtherDrop(col)}
+                      style={{ cursor: 'grab' }}
+                      title="Drag to reorder"
+                    >
                       <input
                         type="checkbox"
                         checked={!!skuViewOtherColumns[col]}
@@ -1537,24 +2113,65 @@ export default function Marketing() {
           </div>
         </div>
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table marketing-sort-table">
             <thead>
               <tr>
-                {SKU_TABLE_COLUMNS.map((col) => (
-                  <th key={col.id} className={col.id === 'last30Sales' || col.id === 'dos' || col.id === 'availableInventory' || col.id === 'impressions' || col.id === 'clicks' ? 'col-num' : ''}>
-                    {col.label}
-                  </th>
-                ))}
-                {OTHER_COLUMNS.filter((c) => skuViewOtherColumns[c]).map((col) => (
-                  <th key={col} className="col-num">{col}</th>
-                ))}
+                {SKU_TABLE_COLUMNS.map((col) => {
+                  const isNum = col.id === 'last30Sales' || col.id === 'dos' || col.id === 'availableInventory' || col.id === 'impressions' || col.id === 'clicks';
+                  const isActive = skuSort?.key === col.id;
+                  const ascActive = isActive && skuSort?.dir === 'asc';
+                  const descActive = isActive && skuSort?.dir === 'desc';
+                  const thCls = [isNum ? 'col-num' : '', isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const onSort = () => {
+                    setSkuSort((prev) => {
+                      if (prev?.key !== col.id) return { key: col.id, dir: 'asc' };
+                      return { key: col.id, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                    });
+                    setSkuPage(1);
+                  };
+                  return (
+                    <th key={col.id} className={thCls}>
+                      <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${col.label}`}>
+                        <span>{col.label}</span>
+                        <span className="th-sort-icons" aria-hidden>
+                          <span className={descActive ? 'active' : ''}>▼</span>
+                          <span className={ascActive ? 'active' : ''}>▲</span>
+                        </span>
+                      </button>
+                    </th>
+                  );
+                })}
+                {visibleOrderedSkuOtherColumns.map((col) => {
+                  const isActive = skuSort?.key === col;
+                  const ascActive = isActive && skuSort?.dir === 'asc';
+                  const descActive = isActive && skuSort?.dir === 'desc';
+                  const thCls = ['col-num', isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const onSort = () => {
+                    setSkuSort((prev) => {
+                      if (prev?.key !== col) return { key: col, dir: 'asc' };
+                      return { key: col, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                    });
+                    setSkuPage(1);
+                  };
+                  return (
+                    <th key={col} className={thCls}>
+                      <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${col}`}>
+                        <span>{col}</span>
+                        <span className="th-sort-icons" aria-hidden>
+                          <span className={descActive ? 'active' : ''}>▼</span>
+                          <span className={ascActive ? 'active' : ''}>▲</span>
+                        </span>
+                      </button>
+                    </th>
+                  );
+                })}
                 <th className="cell-actions" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {displayedSkuRows.length === 0 ? (
                 <tr>
-                  <td colSpan={SKU_TABLE_COLUMNS.length + OTHER_COLUMNS.filter((c) => skuViewOtherColumns[c]).length + 1} className="section-muted" style={{ textAlign: 'center', padding: '2rem' }}>
+                  <td colSpan={SKU_TABLE_COLUMNS.length + visibleOrderedSkuOtherColumns.length + 1} className="section-muted" style={{ textAlign: 'center', padding: '2rem' }}>
                     No data
                   </td>
                 </tr>
@@ -1566,7 +2183,7 @@ export default function Marketing() {
                         {row[col.id] ?? '—'}
                       </td>
                     ))}
-                    {OTHER_COLUMNS.filter((c) => skuViewOtherColumns[c]).map((col) => (
+                    {visibleOrderedSkuOtherColumns.map((col) => (
                       <td key={col} className="col-num">{col === 'Date' ? (row[col] ? formatDateDDMonYY(row[col]) : '—') : (row[col] ?? '—')}</td>
                     ))}
                     <td className="cell-actions">
@@ -1855,13 +2472,44 @@ export default function Marketing() {
 
       {/* Detailed Campaign Level Marketing View – Campaign Table */}
       <div className="card">
-        <h3>Detailed Campaign Level Marketing View</h3>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            marginBottom: '0.35rem',
+          }}
+        >
+          <h3 style={{ margin: 0 }}>Detailed Campaign Level Marketing View</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+            <button
+              type="button"
+              className="btn-primary-soft"
+              onClick={downloadCampaignMarketingCsv}
+              disabled={showProcessing || isProcessing || campaignCsvDownloading}
+            >
+              {campaignCsvDownloading ? 'Preparing…' : 'Download CSV'}
+            </button>
+            {campaignCsvExportError ? (
+              <span className="section-muted" style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem' }}>
+                {campaignCsvExportError}
+              </span>
+            ) : null}
+          </div>
+        </div>
 
-        <div className="filter-toggle-row" style={{ alignItems: 'center', flexWrap: 'nowrap' }}>
+        <div
+          className="filter-toggle-row marketing-sku-toolbar"
+          style={{ alignItems: 'center', flexWrap: 'nowrap', justifyContent: 'space-between' }}
+        >
           <div
             className="marketing-sku-toolbar-left"
             style={{
               display: 'flex',
+              flex: '1 1 auto',
+              minWidth: 0,
               flexWrap: 'nowrap',
               gap: '0.5rem',
               overflowX: 'auto',
@@ -1872,58 +2520,112 @@ export default function Marketing() {
                 key={f.id}
                 type="button"
                 className={`btn-chip ${campaignGroupFilter === f.id ? 'active' : ''}`}
-                onClick={() =>
-                  setCampaignGroupFilter((prev) => (prev === f.id ? '' : f.id))
-                }
+                onClick={() => setCampaignGroupFilter((prev) => (prev === f.id ? '' : f.id))}
               >
                 {f.label}
               </button>
             ))}
-            <div className="column-picker-wrap">
-            <button
-              type="button"
-              className="btn-chip"
-              onClick={() => setShowCampaignDetailColumnPicker((v) => !v)}
-            >
-              Columns
-            </button>
-            {showCampaignDetailColumnPicker && (
-              <div className="column-picker">
-                {CAMPAIGN_DETAIL_OTHER_COLUMNS.map((col) => (
-                  <label key={col} className="column-picker-item">
-                    <input
-                      type="checkbox"
-                      checked={!!campaignDetailOtherColumns[col]}
-                      onChange={() => toggleCampaignDetailOtherColumn(col)}
-                    />
-                    {col}
-                  </label>
-                ))}
-              </div>
-            )}
           </div>
+
+          {/* Keep the column picker OUTSIDE the overflow container so it can overlay the table. */}
+          <div
+            className="marketing-sku-toolbar-right"
+            style={{ marginLeft: 'auto', flex: '0 0 auto', flexWrap: 'nowrap' }}
+          >
+            <div className="column-picker-wrap" ref={campaignColumnPickerWrapRef}>
+              <button
+                type="button"
+                className="btn-chip"
+                onClick={() => setShowCampaignDetailColumnPicker((v) => !v)}
+              >
+                Other Columns
+              </button>
+              {showCampaignDetailColumnPicker && (
+                <div className="column-picker">
+                  <label key="__select_all__" className="column-picker-item">
+                    <input
+                      ref={campaignSelectAllRef}
+                      type="checkbox"
+                      checked={allCampaignOtherSelected}
+                      onChange={toggleAllCampaignOtherColumns}
+                    />
+                    Select all
+                  </label>
+                  <div style={{ margin: '6px 0 10px', fontSize: 12, opacity: 0.8 }}>
+                    Drag a row to reorder columns.
+                  </div>
+                  {campaignOtherColumnOrder.map((col) => (
+                    <label
+                      key={col}
+                      className="column-picker-item"
+                      draggable
+                      onDragStart={() => onCampaignOtherDragStart(col)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => onCampaignOtherDrop(col)}
+                      style={{ cursor: 'grab' }}
+                      title="Drag to reorder"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!campaignDetailOtherColumns[col]}
+                        onChange={() => toggleCampaignDetailOtherColumn(col)}
+                      />
+                      {col}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table marketing-sort-table">
             <thead>
               <tr>
-                <th>Campaign Type</th>
-                <th>Campaign Name</th>
-                <th className="col-num">Impressions</th>
-                <th className="col-num">Clicks</th>
-                <th className="col-num">CTR</th>
-                <th className="col-num">CPC</th>
-                <th className="col-num">CVR</th>
-                <th className="col-num">Ad Spend</th>
-                <th className="col-num">Ad Unit Sold</th>
-                <th className="col-num">Ad Sales</th>
-                {CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).map((col) => (
-                  <th key={col} className="col-num">
-                    {col}
-                  </th>
-                ))}
+                {(() => {
+                  const baseCols = [
+                    { key: 'campaignType', label: 'Campaign Type', cls: '' },
+                    { key: 'campaignName', label: 'Campaign Name', cls: '' },
+                    { key: 'Impressions', label: 'Impressions', cls: 'col-num' },
+                    { key: 'Clicks', label: 'Clicks', cls: 'col-num' },
+                    { key: 'CTR', label: 'CTR', cls: 'col-num' },
+                    { key: 'CPC', label: 'CPC', cls: 'col-num' },
+                    { key: 'CVR', label: 'CVR', cls: 'col-num' },
+                    { key: 'Ad Spend', label: 'Ad Spend', cls: 'col-num' },
+                    { key: 'Ad Unit Sold', label: 'Ad Unit Sold', cls: 'col-num' },
+                    { key: 'Ad Sales', label: 'Ad Sales', cls: 'col-num' },
+                  ];
+                  const renderTh = (key, label, cls) => {
+                    const isActive = campaignSort?.key === key;
+                    const ascActive = isActive && campaignSort?.dir === 'asc';
+                    const descActive = isActive && campaignSort?.dir === 'desc';
+                    const thCls = [cls, isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                    const onSort = () => {
+                      setCampaignSort((prev) => {
+                        if (prev?.key !== key) return { key, dir: 'asc' };
+                        return { key, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                      });
+                    };
+                    return (
+                      <th key={key} className={thCls}>
+                        <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${label}`}>
+                          <span>{label}</span>
+                          <span className="th-sort-icons" aria-hidden>
+                            <span className={descActive ? 'active' : ''}>▼</span>
+                            <span className={ascActive ? 'active' : ''}>▲</span>
+                          </span>
+                        </button>
+                      </th>
+                    );
+                  };
+                  return (
+                    <>
+                      {baseCols.map((c) => renderTh(c.key, c.label, c.cls))}
+                      {visibleOrderedCampaignOtherColumns.map((col) => renderTh(col, col, 'col-num'))}
+                    </>
+                  );
+                })()}
               </tr>
             </thead>
             <tbody>
@@ -1940,18 +2642,18 @@ export default function Marketing() {
                     <td className="col-num"><Skeleton height={12} /></td>
                     <td className="col-num"><Skeleton height={12} /></td>
                     <td className="col-num"><Skeleton height={12} /></td>
-                    {CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).map((col) => (
+                    {visibleOrderedCampaignOtherColumns.map((col) => (
                       <td key={`${col}-${i}`} className="col-num">
                         <Skeleton height={12} />
                       </td>
                     ))}
                   </tr>
                 ))
-              ) : filteredCampaignRows.length === 0 ? (
+              ) : sortedCampaignRows.length === 0 ? (
                 <tr>
                   <td
                     colSpan={
-                      10 + CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).length
+                      10 + visibleOrderedCampaignOtherColumns.length
                     }
                     className="section-muted"
                     style={{ textAlign: 'center', padding: '2rem' }}
@@ -1960,7 +2662,7 @@ export default function Marketing() {
                   </td>
                 </tr>
               ) : (
-                filteredCampaignRows.map((row, idx) => (
+                sortedCampaignRows.map((row, idx) => (
                   <tr key={row.id ?? idx}>
                     <td>{row.campaignType ?? '—'}</td>
                     <td>{row.campaignName ?? '—'}</td>
@@ -1972,7 +2674,7 @@ export default function Marketing() {
                     <td className="col-num">{formatCampaignTableCell('Ad Spend', readFirst(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']))}</td>
                     <td className="col-num">{formatCampaignTableCell('Ad Unit Sold', readFirst(row, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold', 'ad_unit_sold']))}</td>
                     <td className="col-num">{formatCampaignTableCell('Ad Sales', readFirst(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']))}</td>
-                    {CAMPAIGN_DETAIL_OTHER_COLUMNS.filter((c) => campaignDetailOtherColumns[c]).map((col) => (
+                    {visibleOrderedCampaignOtherColumns.map((col) => (
                       <td key={col} className="col-num">
                         {(() => {
                           // Allow both backend-friendly labels and raw DB keys.

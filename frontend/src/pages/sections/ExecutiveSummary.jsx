@@ -23,6 +23,9 @@ export default function ExecutiveSummary() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [asinModal, setAsinModal] = useState({ open: false, title: '', asins: [] });
+  const [csvDownloading, setCsvDownloading] = useState(false);
+  const [csvExportError, setCsvExportError] = useState('');
+  const [sort, setSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
 
   const setActiveDeepDiveTabAndResetPage = (tab) => {
     setActiveDeepDiveTab(tab);
@@ -293,11 +296,63 @@ export default function ExecutiveSummary() {
     return filteredByChannel;
   }, [revenueRows, prevRevenueRows, activeDeepDiveTab, salesChannelFilter, dateFilterType]);
 
-  const totalRows = tableRows.length;
+  const sortedRows = useMemo(() => {
+    const dir = sort?.dir === 'desc' ? 'desc' : 'asc';
+    const key = sort?.key || 'productName';
+
+    const getCellValue = (row) => {
+      switch (key) {
+        case 'productName':
+          return row?.productName ?? '';
+        case 'previousRevenue':
+          return Number(row?.previousRevenue);
+        case 'currentRevenue':
+          return Number(row?.currentRevenue);
+        case 'previousUnits':
+          return Number(row?.previousUnits);
+        case 'currentUnits':
+          return Number(row?.currentUnits);
+        case 'pctDiff':
+          // treat "New" as null-ish so it sorts last
+          return row?.pctChangeRevenue == null ? null : Number(row?.pctChangeRevenue);
+        default:
+          return row?.[key];
+      }
+    };
+
+    const numericKeys = new Set(['previousRevenue', 'currentRevenue', 'previousUnits', 'currentUnits', 'pctDiff']);
+
+    const compare = (a, b) => {
+      const av = getCellValue(a);
+      const bv = getCellValue(b);
+      const aEmpty = av == null || av === '' || (typeof av === 'number' && Number.isNaN(av));
+      const bEmpty = bv == null || bv === '' || (typeof bv === 'number' && Number.isNaN(bv));
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+
+      if (numericKeys.has(key)) {
+        const an = Number(av);
+        const bn = Number(bv);
+        if (an === bn) return 0;
+        return an < bn ? -1 : 1;
+      }
+      return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
+    };
+
+    const base = [...tableRows];
+    base.sort((a, b) => {
+      const c = compare(a, b);
+      return dir === 'desc' ? -c : c;
+    });
+    return base;
+  }, [tableRows, sort]);
+
+  const totalRows = sortedRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * pageSize;
-  const pagedRows = tableRows.slice(startIndex, startIndex + pageSize);
+  const pagedRows = sortedRows.slice(startIndex, startIndex + pageSize);
 
   if (loading) {
     return (
@@ -320,6 +375,31 @@ export default function ExecutiveSummary() {
   const formatAedRounded = (value) => {
     const n = Number(value) || 0;
     return `AED ${Math.round(n).toLocaleString()}`;
+  };
+
+  const truncateText = (value, maxChars) => {
+    const s = value == null ? '' : String(value);
+    if (!maxChars || maxChars <= 0) return s;
+    if (s.length <= maxChars) return s;
+    return `${s.slice(0, maxChars)}...`;
+  };
+
+  const formatPeriodLabel = (label) => {
+    const raw = String(label ?? '').trim();
+    if (!raw) return raw;
+    // Expected patterns from backend periodLabels:
+    // - "YYYY-MM-DD to YYYY-MM-DD" (week)
+    // - "YYYY-MM-DD" (day)
+    // Keep non-date labels (e.g. "March 2026") as-is.
+    const range = raw.match(/^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$/);
+    if (range) {
+      return `${formatDateDDMonYY(range[1])} to ${formatDateDDMonYY(range[2])}`;
+    }
+    const single = raw.match(/^(\d{4}-\d{2}-\d{2})$/);
+    if (single) {
+      return formatDateDDMonYY(single[1]);
+    }
+    return raw;
   };
 
   const normalizedSelectedChannel = salesChannelFilter ? String(salesChannelFilter).trim().toLowerCase() : '';
@@ -379,6 +459,30 @@ export default function ExecutiveSummary() {
   const kpiHeaderDisplay = kpiData?.kpiHeader || 'Key Performance Metrics';
   const kpiActualColumnHeader = kpiData?.actualColumnHeader || 'Actual (MTD)';
 
+  const downloadAsinPerformanceCsv = async () => {
+    setCsvExportError('');
+    setCsvDownloading(true);
+    try {
+      const blob = await dashboardApi.downloadExecutiveAsinPerformanceCsv({
+        salesChannel: salesChannelFilter || '',
+        dateFilterType,
+        deepDiveTab: activeDeepDiveTab,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `asin-performance-${activeDeepDiveTab}-${dateFilterType}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
+
   const dataUpdatedDisplay = (() => {
     // Match other dashboard screens: show the latest updated revenue date (not only the buybox snapshot).
     const raw = latestUpdatedAtByChannel || data?.dataUpdated || data?.buyboxSnapshotDate || '';
@@ -410,6 +514,64 @@ export default function ExecutiveSummary() {
 
   return (
     <div className="exec-summary" style={{ paddingTop: '16px', paddingBottom: 0 }}>
+      <style>{`
+        /* Executive Summary deep-dive: keep Product Name compact */
+        .exec-deep-dive-product-name {
+          width: 260px;
+          max-width: 260px;
+        }
+        .exec-deep-dive-product-name .exec-product-name-cell {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        /* Executive Summary deep-dive: sortable header button */
+        .exec-summary .table-wrap th .th-sort-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          width: 100%;
+          text-align: left;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          cursor: pointer;
+          color: inherit;
+          font: inherit;
+        }
+
+        .exec-summary .table-wrap th.col-num .th-sort-btn {
+          justify-content: flex-end;
+        }
+
+        .exec-summary .table-wrap th .th-sort-icons {
+          display: inline-flex;
+          flex-direction: row;
+          align-items: center;
+          line-height: 1;
+          font-size: 0.75rem;
+          gap: 2px;
+          user-select: none;
+        }
+
+        .exec-summary .table-wrap th .th-sort-icons span {
+          color: #9ca3af; /* grey for unselected */
+          font-weight: 700;
+        }
+
+        .exec-summary .table-wrap th .th-sort-icons .active {
+          color: #111827; /* black for active */
+          font-weight: 900;
+        }
+
+        .exec-summary .table-wrap th.th-sort-active .th-sort-btn > span:first-child {
+          color: var(--success, #16a34a);
+        }
+      `}</style>
       <header className="exec-header-row fade-in-up" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <div className="exec-header-right">
           <select
@@ -566,13 +728,34 @@ export default function ExecutiveSummary() {
           className="card fade-in-up"
           style={{ animationDelay: '320ms', gridColumn: '1 / -1', minWidth: 0 }}
         >
-          <div className="exec-deep-dive-header" style={{ marginBottom: '0.5rem' }}>
+          <div
+            className="exec-deep-dive-header"
+            style={{
+              marginBottom: '0.5rem',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: '0.75rem',
+            }}
+          >
             <div>
               <h3>Deep dive your ASIN performance</h3>
-              <p className="section-muted">
-                Comparing <strong>{deepDiveMeta.currentLabel}</strong> to{' '}
-                <strong>{deepDiveMeta.previousLabel}</strong>
-              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+              <button
+                type="button"
+                className="btn-primary-soft"
+                onClick={downloadAsinPerformanceCsv}
+                disabled={revenueLoading || csvDownloading}
+              >
+                {csvDownloading ? 'Preparing…' : 'Download CSV'}
+              </button>
+              {csvExportError ? (
+                <span className="section-muted" style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem' }}>
+                  {csvExportError}
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -608,17 +791,48 @@ export default function ExecutiveSummary() {
                   <thead>
                     <tr>
                       <th>ASIN</th>
-                      <th>Product Name</th>
-                      <th className="col-num">Revenue ({deepDiveMeta.previousLabel})</th>
-                      <th className="col-num">Revenue ({deepDiveMeta.currentLabel})</th>
-                      <th className="col-num">Abs Diff</th>
-                      <th className="col-num">% Diff</th>
+                      {(() => {
+                        const prevLabel = formatPeriodLabel(deepDiveMeta.previousLabel);
+                        const currLabel = formatPeriodLabel(deepDiveMeta.currentLabel);
+                        const cols = [
+                          { key: 'productName', label: 'Product Name', cls: 'exec-deep-dive-product-name' },
+                          { key: 'previousRevenue', label: `Revenue (${prevLabel})`, cls: 'col-num' },
+                          { key: 'currentRevenue', label: `Revenue (${currLabel})`, cls: 'col-num' },
+                          { key: 'previousUnits', label: `Units Sold (${prevLabel})`, cls: 'col-num' },
+                          { key: 'currentUnits', label: `Units Sold (${currLabel})`, cls: 'col-num' },
+                          { key: 'pctDiff', label: '% Diff', cls: 'col-num' },
+                        ];
+                        return cols.map((c) => {
+                          const isActive = sort?.key === c.key;
+                          const ascActive = isActive && sort?.dir === 'asc';
+                          const descActive = isActive && sort?.dir === 'desc';
+                          const thCls = [c.cls, isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                          const onSort = () => {
+                            setSort((prev) => {
+                              if (prev?.key !== c.key) return { key: c.key, dir: 'asc' };
+                              return { key: c.key, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                            });
+                            setPage(1);
+                          };
+                          return (
+                            <th key={c.key} className={thCls}>
+                              <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${c.label}`}>
+                                <span>{c.label}</span>
+                                <span className="th-sort-icons" aria-hidden>
+                                  <span className={descActive ? 'active' : ''}>▼</span>
+                                  <span className={ascActive ? 'active' : ''}>▲</span>
+                                </span>
+                              </button>
+                            </th>
+                          );
+                        });
+                      })()}
                     </tr>
                   </thead>
                   <tbody>
                     {!revenueLoading && pagedRows.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="text-secondary">
+                        <td colSpan={7} className="text-secondary">
                           No ASINs match this view for the selected period and channel. Try &quot;Top-selling
                           products&quot; or another tab — &quot;Declining&quot; / &quot;Increasing&quot; only list
                           ASINs with revenue moving down or up vs the comparison period.
@@ -628,24 +842,18 @@ export default function ExecutiveSummary() {
                     {pagedRows.map((row) => (
                       <tr key={row.id}>
                         <td><span className="text-secondary">{row.asin ?? '—'}</span></td>
-                        <td>{row.productName ?? '—'}</td>
+                        <td className="exec-deep-dive-product-name">
+                          <div
+                            className="exec-product-name-cell"
+                            title={row.productName ?? ''}
+                          >
+                            {row.productName ? truncateText(row.productName, 35) : '—'}
+                          </div>
+                        </td>
                         <td className="col-num">{formatAedRounded(row.previousRevenue)}</td>
                         <td className="col-num">{formatAedRounded(row.currentRevenue)}</td>
-                        <td className="col-num">
-                          {(() => {
-                            const v = Number(row.absDiffRevenue) || 0;
-                            if (v === 0) {
-                              return <span className="variation-neutral">0</span>;
-                            }
-                            const cls = v > 0 ? 'variation-positive' : 'variation-negative';
-                            return (
-                              <span className={cls}>
-                                {v > 0 ? '↑' : '↓'}
-                                {Math.round(Math.abs(v)).toLocaleString()}
-                              </span>
-                            );
-                          })()}
-                        </td>
+                        <td className="col-num">{(Number(row.previousUnits) || 0).toLocaleString()}</td>
+                        <td className="col-num">{(Number(row.currentUnits) || 0).toLocaleString()}</td>
                         <td className="col-num">
                           {row.pctChangeRevenue == null ? (
                             (Number(row.previousRevenue) || 0) === 0 && (Number(row.currentRevenue) || 0) > 0 ? (

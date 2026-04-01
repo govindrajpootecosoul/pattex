@@ -13,7 +13,6 @@ const DATE_FILTER_OPTIONS = [
   { id: 'CURRENT_MONTH', label: 'Current Month' },
   { id: 'PREVIOUS_MONTH', label: 'Previous Month' },
   { id: 'CURRENT_YEAR', label: 'Current Year' },
-  { id: 'PREVIOUS_YEAR', label: 'Previous Year' },
   { id: 'CUSTOM_RANGE', label: 'Custom Range' },
 ];
 
@@ -33,16 +32,12 @@ const REVENUE_COLUMN_OPTIONS = [
   { id: 'productCategory', label: 'Product Category' },
   { id: 'packSize', label: 'Pack Size' },
   { id: 'salesChannel', label: 'Sales Channel' },
-  { id: 'reportMonth', label: 'Report Month' },
   { id: 'overallUnit', label: 'Overall Units' },
   { id: 'overallRevenue', label: 'Overall Revenue' },
   { id: 'adUnit', label: 'Ad Units' },
   { id: 'adRevenue', label: 'Ad Revenue' },
   { id: 'organicUnit', label: 'Organic Units' },
   { id: 'organicRevenue', label: 'Organic Revenue' },
-  { id: 'newToBrandUnit', label: 'New to Brand' },
-  { id: 'repeatUnit', label: 'Repeat' },
-  { id: 'promotionalUnit', label: 'Promo' },
   { id: 'aov', label: 'AOV' },
   { id: 'tacos', label: 'TACOS %' },
 ];
@@ -206,6 +201,12 @@ function truncateText(value, maxChars) {
   return `${s.slice(0, maxChars)}...`;
 }
 
+function csvEscape(field) {
+  const s = field == null ? '' : String(field);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 export default function Revenue() {
   const [revenueRows, setRevenueRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -234,16 +235,12 @@ export default function Revenue() {
       productCategory: true,
       packSize: true,
       salesChannel: true,
-      reportMonth: true,
       overallUnit: true,
       overallRevenue: true,
       adUnit: true,
       adRevenue: true,
       organicUnit: true,
       organicRevenue: true,
-      newToBrandUnit: true,
-      repeatUnit: true,
-      promotionalUnit: true,
       aov: true,
       tacos: true,
     };
@@ -285,9 +282,12 @@ export default function Revenue() {
   const dragColumnIdRef = useRef(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [csvDownloading, setCsvDownloading] = useState(false);
+  const [csvExportError, setCsvExportError] = useState('');
   const [comparison, setComparison] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
+  const [sort, setSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
   /** Resolved periods from API — same anchor server used for the query (avoids empty table vs client guess). */
   const [revenuePeriodMeta, setRevenuePeriodMeta] = useState(null);
   const allSalesChannels = useSalesChannels();
@@ -301,6 +301,9 @@ export default function Revenue() {
     setLoading(true);
     setError(null);
     const params = {};
+    // Always request resolved periods from backend so "Current Month" works reliably
+    // across sales channels (especially when data is anchored to latest updated date).
+    params.includePeriods = true;
     if (dateFilterType) params.dateFilterType = dateFilterType;
     if (customRangeStart) params.customRangeStart = customRangeStart;
     if (customRangeEnd) params.customRangeEnd = customRangeEnd;
@@ -330,18 +333,9 @@ export default function Revenue() {
     return () => { cancelled = true; };
   }, [dateFilterType, customRangeStart, customRangeEnd, filters.channel]);
 
-  // Vendor Central data is often provided as day-level snapshots (not fully populated for month-to-date).
-  // When VC is selected, default to Current Day so users see the latest available data immediately.
-  useEffect(() => {
-    const ch = String(filters.channel || '').trim().toLowerCase();
-    if (!ch) return;
-    if (ch.includes('vendor central') && dateFilterType === 'CURRENT_MONTH') {
-      setDateFilterType('CURRENT_DAY');
-      setShowCustomRangePicker(false);
-      setCustomRangeStart('');
-      setCustomRangeEnd('');
-    }
-  }, [filters.channel]); // intentionally not depending on dateFilterType to avoid toggling loops
+  // Note: We intentionally do NOT auto-change the date filter based on Sales Channel.
+  // Some channels (including Vendor Central) may have valid month-level data, and forcing
+  // "Current Day" would prevent users from viewing "Current Month" even when data exists.
 
   useEffect(() => {
     let cancelled = false;
@@ -495,12 +489,95 @@ export default function Revenue() {
     return filteredRows;
   }, [filteredRows, detailedView]);
 
-  const totalRows = tableRows.length;
+  const sortedRows = useMemo(() => {
+    const dir = sort?.dir === 'desc' ? 'desc' : 'asc';
+    const key = sort?.key || 'productName';
+
+    const getCellValue = (row) => {
+      switch (key) {
+        case 'productName':
+          return row.productName ?? '';
+        case 'productCategory':
+          return getRowProductCategory(row) ?? '';
+        case 'packSize':
+          return getRowPackSize(row);
+        case 'overallUnit':
+          return Number(row.overallUnit);
+        case 'overallRevenue':
+          return Number(row.overallRevenue);
+        case 'adUnit':
+          return Number(row.adUnit);
+        case 'adRevenue':
+          return Number(row.adRevenue);
+        case 'organicUnit':
+          return Number(row.organicUnit);
+        case 'organicRevenue':
+          return Number(row.organicRevenue);
+        case 'aov':
+          return Number(row.aov);
+        case 'tacos':
+          return Number(row.tacos);
+        default:
+          return row[key];
+      }
+    };
+
+    const numericKeys = new Set([
+      'overallUnit',
+      'overallRevenue',
+      'adUnit',
+      'adRevenue',
+      'organicUnit',
+      'organicRevenue',
+      'aov',
+      'tacos',
+    ]);
+
+    const compare = (a, b) => {
+      const av = getCellValue(a);
+      const bv = getCellValue(b);
+
+      const aEmpty = av == null || av === '' || (typeof av === 'number' && Number.isNaN(av));
+      const bEmpty = bv == null || bv === '' || (typeof bv === 'number' && Number.isNaN(bv));
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+
+      if (key === 'packSize') {
+        const an = Number.parseFloat(String(av));
+        const bn = Number.parseFloat(String(bv));
+        const aNum = Number.isFinite(an);
+        const bNum = Number.isFinite(bn);
+        if (aNum && bNum) return an === bn ? 0 : an < bn ? -1 : 1;
+        if (aNum && !bNum) return -1;
+        if (!aNum && bNum) return 1;
+        return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
+      }
+
+      if (numericKeys.has(key)) {
+        const an = Number(av);
+        const bn = Number(bv);
+        if (an === bn) return 0;
+        return an < bn ? -1 : 1;
+      }
+
+      return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
+    };
+
+    const base = [...tableRows];
+    base.sort((a, b) => {
+      const c = compare(a, b);
+      return dir === 'desc' ? -c : c;
+    });
+    return base;
+  }, [tableRows, sort]);
+
+  const totalRows = sortedRows.length;
   const pageCount = Math.max(1, Math.ceil(totalRows / pageSize));
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
-  const pagedRows = tableRows.slice(startIndex, endIndex);
+  const pagedRows = sortedRows.slice(startIndex, endIndex);
 
   const summary = useMemo(() => {
     if (!filteredRows.length) {
@@ -645,6 +722,73 @@ export default function Revenue() {
     const missing = REVENUE_COLUMN_OPTIONS.map((c) => c.id).filter((id) => !orderedKnown.includes(id));
     return [...orderedKnown, ...missing];
   }, [columnOrder]);
+
+  const formatRevenueRowCsvValue = (columnId, row) => {
+    const overallRevenue = Number(row.overallRevenue) || 0;
+    const adRevenue = Number(row.adRevenue) || 0;
+    const organicRevenue = Number(row.organicRevenue) || 0;
+    const tacosPct = Number(row.tacos) || 0;
+    switch (columnId) {
+      case 'asin':
+        return row.asin ?? '—';
+      case 'productName':
+        return row.productName ?? '—';
+      case 'productCategory':
+        return getRowProductCategory(row) || '—';
+      case 'packSize':
+        return getRowPackSize(row) || '—';
+      case 'salesChannel':
+        return row.salesChannel ?? '—';
+      case 'overallUnit':
+        return String(Number(row.overallUnit) || 0);
+      case 'overallRevenue':
+        return `AED ${Math.round(overallRevenue).toLocaleString()}`;
+      case 'adUnit':
+        return String(Number(row.adUnit) || 0);
+      case 'adRevenue':
+        return `AED ${Math.round(adRevenue).toLocaleString()}`;
+      case 'organicUnit':
+        return String(Number(row.organicUnit) || 0);
+      case 'organicRevenue':
+        return `AED ${Math.round(organicRevenue).toLocaleString()}`;
+      case 'aov':
+        return (Number(row.aov) || 0).toFixed(2);
+      case 'tacos':
+        return `${tacosPct.toFixed(1)}%`;
+      default:
+        return '';
+    }
+  };
+
+  const downloadDetailedRevenueCsv = () => {
+    setCsvExportError('');
+    setCsvDownloading(true);
+    try {
+      const activeCols = visibleOrderedColumnIds.filter((id) => visibleColumns[id]);
+      if (activeCols.length === 0) {
+        setCsvExportError('Select at least one column to export.');
+        return;
+      }
+      const header = activeCols.map((id) => csvEscape(columnDefsById[id]?.label || id)).join(',');
+      const lines = [header];
+      for (const row of sortedRows) {
+        lines.push(activeCols.map((id) => csvEscape(formatRevenueRowCsvValue(id, row))).join(','));
+      }
+      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `revenue-detailed-${detailedView}-${dateFilterType || 'period'}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
 
   const allColumnsSelected = useMemo(
     () => REVENUE_COLUMN_OPTIONS.every((c) => !!visibleColumns[c.id]),
@@ -1088,6 +1232,52 @@ export default function Revenue() {
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
         }
 
+        /* Revenue-only: sortable header button */
+        .revenue-table-wrap th .th-sort-btn {
+          appearance: none;
+          border: none;
+          background: transparent;
+          padding: 0;
+          margin: 0;
+          width: 100%;
+          text-align: left;
+          display: inline-flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+          cursor: pointer;
+          color: inherit;
+          font: inherit;
+        }
+
+        .revenue-table-wrap th.col-num .th-sort-btn {
+          justify-content: flex-end;
+        }
+
+        .revenue-table-wrap th .th-sort-icons {
+          display: inline-flex;
+          flex-direction: row;
+          align-items: center;
+          line-height: 1;
+          font-size: 0.75rem;
+          gap: 2px;
+          user-select: none;
+        }
+
+        .revenue-table-wrap th .th-sort-icons span {
+          color: #9ca3af; /* grey for unselected */
+          font-weight: 700;
+        }
+
+        .revenue-table-wrap th .th-sort-icons .active {
+          color: #111827; /* black for active */
+          font-weight: 900;
+        }
+
+        .revenue-table-wrap th.th-sort-active .th-sort-btn > span:first-child {
+          color: var(--success, #16a34a);
+        }
+
         /* Revenue table: keep Product Name in one line */
         .revenue-col-product-name {
           min-width: 260px;
@@ -1329,7 +1519,33 @@ export default function Revenue() {
       </div>
 
       <div className="card">
-        <h3>Detailed Revenue View</h3>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            marginBottom: '0.35rem',
+          }}
+        >
+          <h3 style={{ margin: 0 }}>Detailed Revenue View</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem' }}>
+            <button
+              type="button"
+              className="btn-primary-soft"
+              onClick={downloadDetailedRevenueCsv}
+              disabled={loading || csvDownloading}
+            >
+              {csvDownloading ? 'Preparing…' : 'Download CSV'}
+            </button>
+            {csvExportError ? (
+              <span className="section-muted" style={{ color: 'var(--danger, #c62828)', fontSize: '0.85rem' }}>
+                {csvExportError}
+              </span>
+            ) : null}
+          </div>
+        </div>
         <div className="filter-row filter-toggle-row">
           <button
             type="button"
@@ -1430,13 +1646,10 @@ export default function Revenue() {
                     'adRevenue',
                     'organicUnit',
                     'organicRevenue',
-                    'newToBrandUnit',
-                    'repeatUnit',
-                    'promotionalUnit',
                     'aov',
                     'tacos',
                   ]);
-                  const cls =
+                  const baseCls =
                     id === 'productName'
                       ? 'revenue-col-product-name'
                       : id === 'salesChannel'
@@ -1444,9 +1657,43 @@ export default function Revenue() {
                         : numCols.has(id)
                           ? 'col-num'
                           : '';
+                  const isSortable = new Set([
+                    'productName',
+                    'productCategory',
+                    'packSize',
+                    'overallUnit',
+                    'overallRevenue',
+                    'adUnit',
+                    'adRevenue',
+                    'organicUnit',
+                    'organicRevenue',
+                    'aov',
+                    'tacos',
+                  ]).has(id);
+                  const isActive = sort?.key === id;
+                  const ascActive = isActive && sort?.dir === 'asc';
+                  const descActive = isActive && sort?.dir === 'desc';
+                  const cls = [baseCls, isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const onSort = () => {
+                    if (!isSortable) return;
+                    setSort((prev) => {
+                      if (prev?.key !== id) return { key: id, dir: 'asc' };
+                      return { key: id, dir: prev?.dir === 'asc' ? 'desc' : 'asc' };
+                    });
+                    setPage(1);
+                  };
+
+                  if (!isSortable) return <th key={id} className={cls}>{col.label}</th>;
+
                   return (
                     <th key={id} className={cls}>
-                      {col.label}
+                      <button type="button" className="th-sort-btn" onClick={onSort} aria-label={`Sort by ${col.label}`}>
+                        <span>{col.label}</span>
+                        <span className="th-sort-icons" aria-hidden>
+                          <span className={descActive ? 'active' : ''}>▼</span>
+                          <span className={ascActive ? 'active' : ''}>▲</span>
+                        </span>
+                      </button>
                     </th>
                   );
                 })}
@@ -1487,16 +1734,12 @@ export default function Revenue() {
                           </td>
                         );
                       }
-                      if (id === 'reportMonth') return <td key={id}>{row.reportMonth ? formatDateDDMonYY(row.reportMonth) : '—'}</td>;
                       if (id === 'overallUnit') return <td key={id} className="col-num">{Number(row.overallUnit) || 0}</td>;
                       if (id === 'overallRevenue') return <td key={id} className="col-num">AED {Math.round(overallRevenue).toLocaleString()}</td>;
                       if (id === 'adUnit') return <td key={id} className="col-num">{Number(row.adUnit) || 0}</td>;
                       if (id === 'adRevenue') return <td key={id} className="col-num">AED {Math.round(adRevenue).toLocaleString()}</td>;
                       if (id === 'organicUnit') return <td key={id} className="col-num">{Number(row.organicUnit) || 0}</td>;
                       if (id === 'organicRevenue') return <td key={id} className="col-num">AED {Math.round(organicRevenue).toLocaleString()}</td>;
-                      if (id === 'newToBrandUnit') return <td key={id} className="col-num">{Number(row.newToBrandUnit) || 0}</td>;
-                      if (id === 'repeatUnit') return <td key={id} className="col-num">{Number(row.repeatUnit) || 0}</td>;
-                      if (id === 'promotionalUnit') return <td key={id} className="col-num">{Number(row.promotionalUnit) || 0}</td>;
                       if (id === 'aov') return <td key={id} className="col-num">{(Number(row.aov) || 0).toFixed(2)}</td>;
                       if (id === 'tacos') return <td key={id} className="col-num">{tacosPct.toFixed(1)}%</td>;
                       return null;
