@@ -187,6 +187,16 @@ function toYmd(date) {
   return `${y}-${m}-${d}`;
 }
 
+/** Previous calendar day as YYYY-MM-DD (local date parts; avoids UTC parse shifts). */
+function getPrevCalendarDayKey(yyyyMmDd) {
+  if (!yyyyMmDd || typeof yyyyMmDd !== 'string') return '';
+  const parts = yyyyMmDd.split('-').map((x) => parseInt(x, 10));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return '';
+  const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+  dt.setDate(dt.getDate() - 1);
+  return toYmd(dt);
+}
+
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function toDDMonYY(dateKey) {
   if (!dateKey || dateKey === 'UNKNOWN') return dateKey;
@@ -3271,7 +3281,7 @@ router.get('/inventory', async (req, res) => {
 
 router.get('/buybox', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'buybox');
+    const cacheKey = buildDashboardCacheKey(req, 'buybox:v2');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -3292,7 +3302,15 @@ router.get('/buybox', async (req, res) => {
 
       if (selectedKey) {
         if (selectedKey === endKey) {
-          docsFilter = dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], selectedKey);
+          // Load previous calendar day too so day-over-day KPIs work (UI matches on filters/channel).
+          const prevKey = getPrevCalendarDayKey(selectedKey);
+          const dayKeys = prevKey ? [selectedKey, prevKey] : [selectedKey];
+          const clauses = [];
+          dayKeys.forEach((dayKey) => {
+            const q = dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], dayKey);
+            if (q?.$or?.length) clauses.push(...q.$or);
+          });
+          if (clauses.length) docsFilter = { $or: clauses };
         } else {
           const startDate = new Date(selectedKey);
           const endDate = new Date(endKey);
@@ -3571,6 +3589,7 @@ router.get('/buybox', async (req, res) => {
     let rowsToReturn = rows;
     let summaryFromApi = null;
     let updatedAtForResponse = updatedAt;
+    let previousDayRowsPayload;
 
     if (customRangeStart) {
       const selectedKey = parseDateKey(customRangeStart);
@@ -3582,21 +3601,13 @@ router.get('/buybox', async (req, res) => {
         });
         summaryFromApi = aggregateBuyboxRows(rowsToReturn);
         updatedAtForResponse = selectedKey ? `${selectedKey}T12:00:00.000Z` : updatedAt;
-        const selectedDate = new Date(selectedKey);
-        if (!Number.isNaN(selectedDate.getTime())) {
-          const prevDate = new Date(selectedDate);
-          prevDate.setDate(prevDate.getDate() - 1);
-          const prevKey = parseDateKey(prevDate);
-          const currentRows = rows.filter((r) => normalizeRowDate(r) === selectedKey);
-          const comparisonRows = rows.filter((r) => normalizeRowDate(r) === prevKey);
-          const curr = aggregateBuyboxRows(currentRows);
-          const prev = aggregateBuyboxRows(comparisonRows);
-          const fmt = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 10) / 10);
-          comparison = {
-            overallBuyboxPct: { pctChange: fmt(pctChange(curr.overallBuyboxPct, prev.overallBuyboxPct)) },
-            noBuyboxSkus: { pctChange: fmt(pctChange(curr.noBuyboxSkus, prev.noBuyboxSkus)) },
-            amazonAeCount: { pctChange: fmt(pctChange(curr.amazonAeCount, prev.amazonAeCount)) },
-          };
+        if (selectedKey === endKey) {
+          const prevKey = getPrevCalendarDayKey(selectedKey);
+          previousDayRowsPayload = prevKey
+            ? rows.filter((r) => normalizeRowDate(r) === prevKey)
+            : [];
+          // Day-over-day % is computed in the UI so it respects the same filters (e.g. Sales Channel).
+          comparison = null;
         }
       }
     }
@@ -3609,6 +3620,7 @@ router.get('/buybox', async (req, res) => {
       updatedAt: updatedAtForResponse,
       ...(summaryFromApi && { summary: summaryFromApi }),
       ...(comparison && { comparison }),
+      ...(previousDayRowsPayload !== undefined && { previousDayRows: previousDayRowsPayload }),
     };
 
     await Cache.set(cacheKey, payload, ttlSeconds);

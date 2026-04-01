@@ -165,7 +165,7 @@ export default function Buybox() {
     return d.toISOString().split('T')[0];
   }, [isSellerCentralSelected, todayStr]);
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [comparison, setComparison] = useState(null);
+  const [previousDayRows, setPreviousDayRows] = useState([]);
   const [last30SalesByAsinMap, setLast30SalesByAsinMap] = useState(() => new Map());
   const [visibleColumns, setVisibleColumns] = useState(() => {
     const defaults = {
@@ -286,13 +286,13 @@ export default function Buybox() {
       .then((data) => {
         const apiRows = Array.isArray(data.rows) ? data.rows : [];
         setRows(apiRows);
-        setComparison(data?.comparison ?? null);
+        setPreviousDayRows(Array.isArray(data.previousDayRows) ? data.previousDayRows : []);
         setUpdatedAt(data?.updatedAt ?? null);
         setSalesChannelOptionsFromApi(Array.isArray(data.salesChannelOptions) ? data.salesChannelOptions : []);
       })
       .catch((e) => {
         setError(e.message);
-        setComparison(null);
+        setPreviousDayRows([]);
       })
       .finally(() => setLoading(false));
   }, [selectedDate, filters.channel]);
@@ -411,8 +411,8 @@ export default function Buybox() {
     }
   }, [channelOptions]);
 
-  const filteredRows = useMemo(() => {
-    return rowsForSelectedDate.filter((row) => {
+  const rowMatchesBuyboxFilters = useMemo(
+    () => (row) => {
       if (filters.search) {
         const q = filters.search.trim().toLowerCase();
         if (q) {
@@ -440,8 +440,19 @@ export default function Buybox() {
       if (stockFilter === 'NO_BUYBOX' && isAmazonAeOwner(row.currentBuyboxOwner)) return false;
 
       return true;
-    });
-  }, [rowsForSelectedDate, filters, stockFilter]);
+    },
+    [filters, stockFilter],
+  );
+
+  const filteredRows = useMemo(
+    () => rowsForSelectedDate.filter(rowMatchesBuyboxFilters),
+    [rowsForSelectedDate, rowMatchesBuyboxFilters],
+  );
+
+  const filteredPreviousDayRows = useMemo(
+    () => previousDayRows.filter(rowMatchesBuyboxFilters),
+    [previousDayRows, rowMatchesBuyboxFilters],
+  );
 
   const summaryComputed = useMemo(() => {
     if (!filteredRows.length) {
@@ -461,6 +472,23 @@ export default function Buybox() {
   }, [filteredRows]);
 
   const summary = summaryComputed;
+
+  const summaryPreviousDay = useMemo(() => {
+    if (!filteredPreviousDayRows.length) {
+      return { overallBuyboxPct: 0, noBuyboxSkus: 0, amazonAeCount: 0 };
+    }
+    const asinToOwner = new Map();
+    filteredPreviousDayRows.forEach((r) => {
+      if (r.asin) asinToOwner.set(r.asin, normalizeOwner(r.currentBuyboxOwner));
+    });
+    const uniqueAsins = [...asinToOwner.keys()];
+    const totalAsins = uniqueAsins.length;
+    if (!totalAsins) return { overallBuyboxPct: 0, noBuyboxSkus: 0, amazonAeCount: 0 };
+    const amazonAeCount = uniqueAsins.filter((asin) => (asinToOwner.get(asin) || '').includes('amazon.ae')).length;
+    const noBuyboxSkus = uniqueAsins.filter((asin) => !(asinToOwner.get(asin) || '').includes('amazon.ae')).length;
+    const overallBuyboxPct = Math.round((amazonAeCount / totalAsins) * 100);
+    return { overallBuyboxPct, noBuyboxSkus, amazonAeCount };
+  }, [filteredPreviousDayRows]);
 
   /** One row per ASIN for modal tables (first occurrence in filtered rows). */
   const asinListForModal = useMemo(() => {
@@ -761,21 +789,33 @@ export default function Buybox() {
       return `↓${Math.abs(pct)}%`;
     };
     const type = (pct) => (pct == null || Number.isNaN(pct) ? 'neutral' : pct < 0 ? 'negative' : pct > 0 ? 'positive' : 'neutral');
-    if (!comparison) return { overallBuyboxPct: fallback, noBuyboxSkus: fallback, amazonAeCount: fallback };
+    const pctChange = (current, previous) => {
+      if (previous === 0 || previous == null || Number.isNaN(previous)) return null;
+      if (current == null || Number.isNaN(current)) return null;
+      return ((current - previous) / previous) * 100;
+    };
+    const rounded = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 10) / 10);
 
-    const makeTrend = (pctChange, currentValue) => {
-      // When the current metric is zero (e.g. 0 ASINs or 0%),
-      // hide the arrow and percentage to avoid confusing "0 (↑x%)" displays.
+    const makeTrend = (pctVal, currentValue) => {
       if (!currentValue) return fallback;
-      return { value: fmt(pctChange), type: type(pctChange) };
+      if (pctVal == null || Number.isNaN(pctVal)) return fallback;
+      return { value: fmt(rounded(pctVal)), type: type(pctVal) };
     };
 
+    const prev = summaryPreviousDay;
     return {
-      overallBuyboxPct: makeTrend(comparison.overallBuyboxPct?.pctChange, summary.overallBuyboxPct),
-      noBuyboxSkus: makeTrend(comparison.noBuyboxSkus?.pctChange, summary.noBuyboxSkus),
-      amazonAeCount: makeTrend(comparison.amazonAeCount?.pctChange, summary.amazonAeCount),
+      overallBuyboxPct: makeTrend(pctChange(summary.overallBuyboxPct, prev.overallBuyboxPct), summary.overallBuyboxPct),
+      noBuyboxSkus: makeTrend(pctChange(summary.noBuyboxSkus, prev.noBuyboxSkus), summary.noBuyboxSkus),
+      amazonAeCount: makeTrend(pctChange(summary.amazonAeCount, prev.amazonAeCount), summary.amazonAeCount),
     };
-  }, [comparison, summary.overallBuyboxPct, summary.noBuyboxSkus, summary.amazonAeCount]);
+  }, [
+    summary.overallBuyboxPct,
+    summary.noBuyboxSkus,
+    summary.amazonAeCount,
+    summaryPreviousDay.overallBuyboxPct,
+    summaryPreviousDay.noBuyboxSkus,
+    summaryPreviousDay.amazonAeCount,
+  ]);
 
   const actionsRecommended = [
     { action: 'Action 1', recommendation: 'Review pricing for SKUs without Buybox', status: 'No action taken' },
@@ -1240,7 +1280,7 @@ export default function Buybox() {
                 ({kpiTrends.overallBuyboxPct.value})
               </span>
             </div>
-            <div className="value-secondary">vs last period</div>
+            <div className="value-secondary">vs previous day</div>
           </div>
           <button
             type="button"
@@ -1254,7 +1294,7 @@ export default function Buybox() {
                 ({kpiTrends.amazonAeCount.value})
               </span>
             </div>
-            <div className="value-secondary">vs last period</div>
+            <div className="value-secondary">vs previous day</div>
           </button>
           <button
             type="button"
@@ -1268,7 +1308,7 @@ export default function Buybox() {
                 ({kpiTrends.noBuyboxSkus.value})
               </span>
             </div>
-            <div className="value-secondary">vs last period</div>
+            <div className="value-secondary">vs previous day</div>
           </button>
           <div className="kpi-item kpi-blue">
             <div className="label">Actions Recommended</div>
