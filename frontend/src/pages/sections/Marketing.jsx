@@ -354,7 +354,9 @@ export default function Marketing() {
   const campaignSelectAllRef = useRef(null);
   const campaignDragColumnIdRef = useRef(null);
   const [performanceCards, setPerformanceCards] = useState(['adSpend', 'overallRevenue', 'tacos', 'organicUnitSold']);
+  const [performanceSeriesVisible, setPerformanceSeriesVisible] = useState([true, true, true, true]);
   const [campaignPerformanceCards, setCampaignPerformanceCards] = useState(['adSpend', 'overallRevenue', 'clicks', 'impressions']);
+  const [campaignPerformanceSeriesVisible, setCampaignPerformanceSeriesVisible] = useState([true, true, true, true]);
   const [skuPage, setSkuPage] = useState(1);
   const [skuPageSize, setSkuPageSize] = useState(20);
   const [skuCsvDownloading, setSkuCsvDownloading] = useState(false);
@@ -1471,6 +1473,11 @@ export default function Marketing() {
       updated[index] = nextId;
       return updated;
     });
+    setPerformanceSeriesVisible((prev) => {
+      const next = [...prev];
+      next[index] = true;
+      return next;
+    });
   };
 
   const handleCampaignPerformanceCardChange = (index, nextId) => {
@@ -1478,6 +1485,33 @@ export default function Marketing() {
       const updated = [...prev];
       updated[index] = nextId;
       return updated;
+    });
+    setCampaignPerformanceSeriesVisible((prev) => {
+      const next = [...prev];
+      next[index] = true;
+      return next;
+    });
+  };
+
+  const togglePerformanceSeriesVisible = (index) => {
+    setPerformanceSeriesVisible((prev) => {
+      if (index < 0 || index >= prev.length) return prev;
+      const next = [...prev];
+      const countOn = next.filter(Boolean).length;
+      if (next[index] && countOn <= 1) return prev;
+      next[index] = !next[index];
+      return next;
+    });
+  };
+
+  const toggleCampaignPerformanceSeriesVisible = (index) => {
+    setCampaignPerformanceSeriesVisible((prev) => {
+      if (index < 0 || index >= prev.length) return prev;
+      const next = [...prev];
+      const countOn = next.filter(Boolean).length;
+      if (next[index] && countOn <= 1) return prev;
+      next[index] = !next[index];
+      return next;
     });
   };
 
@@ -1810,12 +1844,29 @@ export default function Marketing() {
               {performanceCards.map((metricId, index) => {
                 const config = getPerformanceMetricConfig(metricId);
                 const value = getPerformanceMetricValue(metricId);
+                const seriesOn = performanceSeriesVisible[index];
 
                 return (
                   <div
                     key={`${metricId}-${index}`}
                     className="kpi-item"
-                    style={{ border: '1px solid rgba(148,163,184,0.35)' }}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={seriesOn}
+                    title="Click to show or hide this series on the chart. At least one series stays visible."
+                    onClick={() => togglePerformanceSeriesVisible(index)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        togglePerformanceSeriesVisible(index);
+                      }
+                    }}
+                    style={{
+                      border: seriesOn ? '2px solid #22c55e' : '2px solid #94a3b8',
+                      cursor: 'pointer',
+                      opacity: seriesOn ? 1 : 0.48,
+                      transition: 'opacity 0.15s ease, border-color 0.15s ease',
+                    }}
                   >
                     <div className="label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span
@@ -1823,32 +1874,41 @@ export default function Marketing() {
                           width: 10,
                           height: 10,
                           borderRadius: 2,
-                          background: config.color,
+                          background: seriesOn ? config.color : '#94a3b8',
+                          flexShrink: 0,
                         }}
                       />
-                      <select
-                        value={metricId}
-                        onChange={(e) => handlePerformanceCardChange(index, e.target.value)}
-                        style={{
-                          border: 'none',
-                          background: 'transparent',
-                          fontSize: 13,
-                          fontWeight: 500,
-                          padding: 0,
-                          outline: 'none',
-                          cursor: 'pointer',
-                        }}
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
                       >
-                        {PERFORMANCE_METRIC_OPTIONS.map((opt) => (
-                          <option
-                            key={opt.id}
-                            value={opt.id}
-                            disabled={performanceCards.includes(opt.id) && opt.id !== metricId}
-                          >
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+                        <select
+                          value={metricId}
+                          onChange={(e) => handlePerformanceCardChange(index, e.target.value)}
+                          style={{
+                            border: seriesOn ? '1px solid #22c55e' : '1px solid #94a3b8',
+                            borderRadius: 4,
+                            background: 'transparent',
+                            fontSize: 13,
+                            fontWeight: 500,
+                            padding: '2px 4px',
+                            outline: 'none',
+                            cursor: 'pointer',
+                            transition: 'border-color 0.15s ease',
+                          }}
+                        >
+                          {PERFORMANCE_METRIC_OPTIONS.map((opt) => (
+                            <option
+                              key={opt.id}
+                              value={opt.id}
+                              disabled={performanceCards.includes(opt.id) && opt.id !== metricId}
+                            >
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                       <span aria-hidden="true" style={{ marginLeft: 'auto', opacity: 0.6 }}>⌄</span>
                       <span
                         aria-hidden="true"
@@ -1908,7 +1968,7 @@ export default function Marketing() {
                     tick={{ fontSize: 11, fill: '#2563eb' }}
                   />
                   <Tooltip content={<MarketingPerformanceTooltip />} />
-                  {performanceCards.includes('impressions') && (
+                  {performanceCards.some((id, i) => id === 'impressions' && performanceSeriesVisible[i]) && (
                     <Bar
                       yAxisId="right"
                       dataKey="impressions"
@@ -1917,7 +1977,8 @@ export default function Marketing() {
                       radius={[6, 6, 0, 0]}
                     />
                   )}
-                  {performanceCards.map((metricId) => {
+                  {performanceCards.map((metricId, index) => {
+                    if (!performanceSeriesVisible[index]) return null;
                     // Always keep bar-only for impressions; no line on top of it.
                     if (metricId === 'impressions') return null;
 
@@ -1926,7 +1987,7 @@ export default function Marketing() {
 
                     return (
                       <Line
-                        key={metricId}
+                        key={`${metricId}-${index}`}
                         type="monotone"
                         yAxisId={axisId}
                         dataKey={metricId}
@@ -2355,11 +2416,29 @@ export default function Marketing() {
                 {campaignPerformanceCards.map((metricId, index) => {
                   const config = getPerformanceMetricConfig(metricId);
                   const value = getCampaignPerformanceMetricValue(metricId);
+                  const seriesOn = campaignPerformanceSeriesVisible[index];
+
                   return (
                     <div
                       key={`${metricId}-${index}`}
                       className="kpi-item"
-                      style={{ border: '1px solid rgba(148,163,184,0.35)' }}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={seriesOn}
+                      title="Click to show or hide this series on the chart. At least one series stays visible."
+                      onClick={() => toggleCampaignPerformanceSeriesVisible(index)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          toggleCampaignPerformanceSeriesVisible(index);
+                        }
+                      }}
+                      style={{
+                        border: seriesOn ? '2px solid #22c55e' : '2px solid #94a3b8',
+                        cursor: 'pointer',
+                        opacity: seriesOn ? 1 : 0.48,
+                        transition: 'opacity 0.15s ease, border-color 0.15s ease',
+                      }}
                     >
                       <div className="label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span
@@ -2367,32 +2446,41 @@ export default function Marketing() {
                             width: 10,
                             height: 10,
                             borderRadius: 2,
-                            background: config.color,
+                            background: seriesOn ? config.color : '#94a3b8',
+                            flexShrink: 0,
                           }}
                         />
-                        <select
-                          value={metricId}
-                          onChange={(e) => handleCampaignPerformanceCardChange(index, e.target.value)}
-                          style={{
-                            border: 'none',
-                            background: 'transparent',
-                            fontSize: 13,
-                            fontWeight: 500,
-                            padding: 0,
-                            outline: 'none',
-                            cursor: 'pointer',
-                          }}
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
                         >
-                          {PERFORMANCE_METRIC_OPTIONS.map((opt) => (
-                            <option
-                              key={opt.id}
-                              value={opt.id}
-                              disabled={campaignPerformanceCards.includes(opt.id) && opt.id !== metricId}
-                            >
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
+                          <select
+                            value={metricId}
+                            onChange={(e) => handleCampaignPerformanceCardChange(index, e.target.value)}
+                            style={{
+                              border: seriesOn ? '1px solid #22c55e' : '1px solid #94a3b8',
+                              borderRadius: 4,
+                              background: 'transparent',
+                              fontSize: 13,
+                              fontWeight: 500,
+                              padding: '2px 4px',
+                              outline: 'none',
+                              cursor: 'pointer',
+                              transition: 'border-color 0.15s ease',
+                            }}
+                          >
+                            {PERFORMANCE_METRIC_OPTIONS.map((opt) => (
+                              <option
+                                key={opt.id}
+                                value={opt.id}
+                                disabled={campaignPerformanceCards.includes(opt.id) && opt.id !== metricId}
+                              >
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <span aria-hidden="true" style={{ marginLeft: 'auto', opacity: 0.6 }}>⌄</span>
                       </div>
                       <div className="value">{value}</div>
@@ -2436,7 +2524,7 @@ export default function Marketing() {
                       tick={{ fontSize: 11, fill: '#2563eb' }}
                     />
                     <Tooltip content={<MarketingPerformanceTooltip />} />
-                    {campaignPerformanceCards.includes('impressions') && (
+                    {campaignPerformanceCards.some((id, i) => id === 'impressions' && campaignPerformanceSeriesVisible[i]) && (
                       <Bar
                         yAxisId="right"
                         dataKey="impressions"
@@ -2445,13 +2533,14 @@ export default function Marketing() {
                         radius={[6, 6, 0, 0]}
                       />
                     )}
-                    {campaignPerformanceCards.map((metricId) => {
+                    {campaignPerformanceCards.map((metricId, index) => {
+                      if (!campaignPerformanceSeriesVisible[index]) return null;
                       if (metricId === 'impressions') return null;
                       const config = getPerformanceMetricConfig(metricId);
                       const axisId = config.axis === 'left' ? 'left' : 'right';
                       return (
                         <Line
-                          key={metricId}
+                          key={`${metricId}-${index}`}
                           type="monotone"
                           yAxisId={axisId}
                           dataKey={metricId}
