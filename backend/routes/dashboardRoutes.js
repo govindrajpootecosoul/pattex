@@ -328,6 +328,16 @@ function dateMatchQueryAny(fieldNames, dateKey) {
   return clauses.length ? { $or: clauses } : {};
 }
 
+/** AND channel + date filters — both use top-level `$or`, so object spread would drop one side. */
+function mergeChannelAndDateMatch(channelMatch, dateAnyResult) {
+  const hasC = channelMatch && typeof channelMatch === 'object' && Object.keys(channelMatch).length > 0;
+  const hasD = dateAnyResult && typeof dateAnyResult === 'object' && Object.keys(dateAnyResult).length > 0;
+  if (hasC && hasD) return { $and: [channelMatch, dateAnyResult] };
+  if (hasC) return { ...channelMatch };
+  if (hasD) return { ...dateAnyResult };
+  return {};
+}
+
 function mongoNumberExpr(fieldPath) {
   return {
     $convert: {
@@ -503,7 +513,8 @@ function pickBuyboxSnapshotDateKeyForExecutive(allDateKeys, dateFilterType, cust
     return sortedKeys[sortedKeys.length - 1];
   }
 
-  const dayWeek = getPeriodDaysOrWeeks(dateFilterType);
+  // Must pass anchorDate so CURRENT_DAY / week periods align with data anchor (not default T-3 calendar).
+  const dayWeek = getPeriodDaysOrWeeks(dateFilterType, anchorDate);
   const periods = dayWeek || getPeriodMonths(dateFilterType, customRangeStart, customRangeEnd, anchorDate);
   if (!periods?.current?.length) {
     return sortedKeys[sortedKeys.length - 1];
@@ -762,7 +773,7 @@ router.get('/sales-channels', async (req, res) => {
 
 router.get('/executive-summary', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'executive-summary:v2');
+    const cacheKey = buildDashboardCacheKey(req, 'executive-summary:v5');
     const ttlSeconds = 300; // 5 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -791,10 +802,19 @@ router.get('/executive-summary', async (req, res) => {
         return best;
       })(),
       (async () => {
-        const docs = await req.companyModels.Buybox.find(buyboxChannelMatch, { Date: 1, date: 1, DATE: 1 }).lean();
+        const docs = await req.companyModels.Buybox.find(buyboxChannelMatch, {
+          Date: 1,
+          date: 1,
+          DATE: 1,
+          'Date ': 1,
+        }).lean();
         const keys = [];
         docs.forEach((d) => {
-          const key = parseDateKey(d?.Date || d?.date || d?.DATE);
+          const raw =
+            getFieldValueLoose(d, 'Date') ??
+            getFieldValueLoose(d, 'date') ??
+            getFieldValueLoose(d, 'DATE');
+          const key = parseDateKey(raw);
           if (key) keys.push(key);
         });
         return keys;
@@ -805,12 +825,26 @@ router.get('/executive-summary', async (req, res) => {
       ? [...new Set(buyboxDateKeys)].sort().slice(-1)[0]
       : '';
 
+    // Anchor day/week/month periods to the same "as of" date semantics as Buybox.jsx:
+    // - Seller Central: latest buybox snapshot for that channel (can be today).
+    // - Vendor / other channels: min(latest buybox snapshot, calendar T-3) — same as maxSelectableDateStr + latest-updated clamp.
     let anchorDateForExec = null;
-    if (salesChannel && dateFilterType && dateFilterType !== 'CUSTOM_RANGE' && buyboxDateKey) {
-      const ad = new Date(`${buyboxDateKey}T00:00:00.000Z`);
-      if (!Number.isNaN(ad.getTime())) {
-        ad.setDate(ad.getDate() - 3);
-        anchorDateForExec = ad;
+    const isSellerCentralSelected = Boolean(salesChannel) && String(salesChannel).trim().toLowerCase().includes('seller central');
+    const buyboxT3CapYmd = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 3);
+      return d.toISOString().slice(0, 10);
+    })();
+    if (isSellerCentralSelected && buyboxDateKey) {
+      const ad = new Date(`${buyboxDateKey}T12:00:00.000Z`);
+      if (!Number.isNaN(ad.getTime())) anchorDateForExec = ad;
+    } else if (!isSellerCentralSelected && salesChannel && dateFilterType && dateFilterType !== 'CUSTOM_RANGE') {
+      const effectiveKey = buyboxDateKey
+        ? (buyboxDateKey <= buyboxT3CapYmd ? buyboxDateKey : buyboxT3CapYmd)
+        : buyboxT3CapYmd;
+      if (effectiveKey) {
+        const ad = new Date(`${effectiveKey}T12:00:00.000Z`);
+        if (!Number.isNaN(ad.getTime())) anchorDateForExec = ad;
       }
     }
 
@@ -916,8 +950,10 @@ router.get('/executive-summary', async (req, res) => {
     const openPODetailsPromise = (async () => {
       // From pattex.buyboxes, column "Open POs" > 0 on latest date.
       const match = {
-        ...buyboxChannelMatch,
-        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxSnapshotDate),
+        ...mergeChannelAndDateMatch(
+          buyboxChannelMatch,
+          dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], buyboxSnapshotDate),
+        ),
         $expr: {
           $gt: [
             openPoExpr,
@@ -962,8 +998,10 @@ router.get('/executive-summary', async (req, res) => {
     const poReceivedDetailsPromise = (async () => {
       // From pattex.buyboxes, column "PO_received_Units" > 0 on latest date.
       const match = {
-        ...buyboxChannelMatch,
-        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxSnapshotDate),
+        ...mergeChannelAndDateMatch(
+          buyboxChannelMatch,
+          dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], buyboxSnapshotDate),
+        ),
         $expr: {
           $gt: [
             poReceivedUnitsExpr,
@@ -1015,8 +1053,10 @@ router.get('/executive-summary', async (req, res) => {
         },
       };
       const match = {
-        ...buyboxChannelMatch,
-        ...dateMatchQueryAny(['Date', 'date', 'DATE'], buyboxSnapshotDate),
+        ...mergeChannelAndDateMatch(
+          buyboxChannelMatch,
+          dateMatchQueryAny(['Date', 'date', 'DATE', 'Date '], buyboxSnapshotDate),
+        ),
         $expr: {
           $and: [
             {

@@ -407,11 +407,18 @@ export default function ExecutiveSummary() {
     return raw;
   };
 
-  const normalizedSelectedChannel = salesChannelFilter ? String(salesChannelFilter).trim().toLowerCase() : '';
+  // Match backend / Buybox channel normalization (NBSP, multi-space) so PO cards are not emptied by string mismatch.
+  const normalizeExecChannel = (value) =>
+    String(value ?? '')
+      .replace(/\u00A0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  const normalizedSelectedChannel = normalizeExecChannel(salesChannelFilter);
   const filterPoRowsByChannel = (rows) => {
     const list = Array.isArray(rows) ? rows : [];
     if (!normalizedSelectedChannel) return list;
-    return list.filter((r) => String(r?.salesChannel ?? '').trim().toLowerCase() === normalizedSelectedChannel);
+    return list.filter((r) => normalizeExecChannel(r?.salesChannel) === normalizedSelectedChannel);
   };
 
   const openPODetailsFiltered = filterPoRowsByChannel(poSummary.openPODetails);
@@ -451,7 +458,7 @@ export default function ExecutiveSummary() {
       title = 'PO RECEIVED – ASIN breakdown';
       rows = poReceivedDetailsFiltered;
     } else if (type === 'SKU_NO_BUYBOX') {
-      title = 'ASIN WT NO BUYBOX – ASIN breakdown';
+      title = 'ASIN WITH NO BUYBOX – ASIN breakdown';
       rows = skuNoBuyboxRowsNoAmazon;
     }
     setAsinModal({
@@ -489,7 +496,20 @@ export default function ExecutiveSummary() {
   };
 
   const dataUpdatedDisplay = (() => {
-    // Match other dashboard screens: show the latest updated revenue date (not only the buybox snapshot).
+    const channelNorm = String(salesChannelFilter || '')
+      .replace(/\u00A0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+    const isSellerCentral =
+      channelNorm === 'seller central' || channelNorm.includes('seller central');
+    // Seller Central: show "as of today" (local calendar) on Executive Summary, matching Buybox date UX.
+    if (isSellerCentral) {
+      const d = new Date();
+      const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return formatDateDDMonYY(ymd);
+    }
+    // Other channels: latest revenue / snapshot date (same as before).
     const raw = latestUpdatedAtByChannel || data?.dataUpdated || data?.buyboxSnapshotDate || '';
     const dateKey = raw ? String(raw).split('T')[0] : '';
     return dateKey ? formatDateDDMonYY(dateKey) : null;
@@ -719,7 +739,7 @@ export default function ExecutiveSummary() {
               className="exec-stat-card kpi-slate"
               onClick={() => openAsinModal('SKU_NO_BUYBOX')}
             >
-              <div className="exec-stat-label">ASIN WT NO BUYBOX</div>
+              <div className="exec-stat-label">ASIN WITH NO BUYBOX</div>
               <div className="exec-stat-value">
                 {asinWithoutAmazonBuyboxCount.toLocaleString()}
               </div>
