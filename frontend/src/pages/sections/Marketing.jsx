@@ -34,6 +34,30 @@ function mktRowNum(row, keys) {
   return 0;
 }
 
+function firstDefinedSkuField(row, keys) {
+  if (!row) return undefined;
+  const list = Array.isArray(keys) ? keys : [keys];
+  for (const k of list) {
+    const v = row[k];
+    if (v != null && v !== '') return v;
+  }
+  return undefined;
+}
+
+/** Resolve TACOS % for SKU rows (column id is `TACOS`; API/merge may use `TACoS` / `tacos`). */
+function getSkuTacosPercent(row) {
+  if (!row) return null;
+  const raw = firstDefinedSkuField(row, ['TACOS', 'TACoS', 'tacos']);
+  if (raw != null && raw !== '') {
+    const n = Number(String(raw).replace(/,/g, '').replace(/[^0-9.\-]+/g, '').trim());
+    if (Number.isFinite(n)) return n;
+  }
+  const spend = mktRowNum(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']);
+  const rev = mktRowNum(row, ['Overall Revenue', 'overallRevenue', 'total_sales', 'totalSales', 'sales']);
+  if (rev > 0) return (spend / rev) * 100;
+  return null;
+}
+
 /** One row per ASIN: sum funnel metrics, average DOS; recompute CTR/CPC/CVR/ACoS/TACoS and organic fields. */
 function mergeMarketingSkuRowsByAsin(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
@@ -124,6 +148,7 @@ function mergeMarketingSkuRowsByAsin(rows) {
       'Overall Unit Sold': overallUnitSold,
       'Overall Revenue': Math.round(overallRevenue * 100) / 100,
       TACoS: Math.round(tacos * 100) / 100,
+      TACOS: Math.round(tacos * 100) / 100,
       'Organic Unit Sold': organicUnitSold,
       'Organic Revenue': Math.round(organicRevenue * 100) / 100,
     });
@@ -161,6 +186,32 @@ const OTHER_COLUMNS = [
   'Organic Unit Sold',
   'Organic Revenue',
 ];
+
+/** SKU / Campaign detailed tables: align with Revenue (amounts & units left; rates / % right). */
+function marketingSkuMainColumnClass(columnId) {
+  const textCols = new Set(['asin', 'productName', 'productCategory', 'packSize', 'salesChannel']);
+  if (textCols.has(columnId)) return '';
+  return 'marketing-detailed-metric';
+}
+
+function marketingSkuOtherColumnClass(columnName) {
+  const s = String(columnName || '').trim().toLowerCase();
+  if (s === 'date') return '';
+  if (s === 'ctr' || s === 'cvr' || s === 'acos' || s === 'tacos') return 'col-num';
+  return 'marketing-detailed-metric';
+}
+
+function marketingCampaignBaseColumnClass(key) {
+  if (key === 'campaignType' || key === 'campaignName') return '';
+  if (key === 'CTR' || key === 'CPC' || key === 'CVR') return 'col-num';
+  return 'marketing-detailed-metric';
+}
+
+function marketingCampaignOtherDetailClass(col) {
+  const s = String(col || '').trim().toLowerCase();
+  if (s === 'acos' || s === 'tacos') return 'col-num';
+  return 'marketing-detailed-metric';
+}
 
 const FUNNEL_METRICS = ['Impressions', 'Clicks', 'Sales'];
 
@@ -1085,6 +1136,10 @@ export default function Marketing() {
     const getCellValue = (row) => {
       if (!row) return null;
       if (key === 'Date') return row?.Date ? String(row.Date).slice(0, 10) : '';
+      if (key === 'TACOS') {
+        const p = getSkuTacosPercent(row);
+        return p == null ? '' : p;
+      }
       const v = row?.[key];
       return v == null ? '' : v;
     };
@@ -1175,6 +1230,10 @@ export default function Marketing() {
         const values = allCols.map((colId) => {
           if (colId === 'Date') {
             return row?.Date ? formatDateDDMonYY(row.Date) : '—';
+          }
+          if (colId === 'TACOS') {
+            const p = getSkuTacosPercent(row);
+            return p == null ? '—' : `${Number(p).toFixed(2)}%`;
           }
           const v = row?.[colId];
           return v == null ? '—' : v;
@@ -1750,6 +1809,10 @@ export default function Marketing() {
 
         .marketing-sort-table th.th-sort-active .th-sort-btn > span:first-child {
           color: var(--success, #16a34a);
+        }
+
+        .marketing-sort-table .marketing-detailed-metric {
+          font-variant-numeric: tabular-nums;
         }
       `}</style>
 
@@ -2364,11 +2427,10 @@ export default function Marketing() {
             <thead>
               <tr>
                 {SKU_TABLE_COLUMNS.map((col) => {
-                  const isNum = col.id === 'last30Sales' || col.id === 'dos' || col.id === 'availableInventory' || col.id === 'impressions' || col.id === 'clicks';
                   const isActive = skuSort?.key === col.id;
                   const ascActive = isActive && skuSort?.dir === 'asc';
                   const descActive = isActive && skuSort?.dir === 'desc';
-                  const thCls = [isNum ? 'col-num' : '', isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const thCls = [marketingSkuMainColumnClass(col.id), isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
                   const onSort = () => {
                     setSkuSort((prev) => {
                       if (prev?.key !== col.id) return { key: col.id, dir: 'asc' };
@@ -2392,7 +2454,7 @@ export default function Marketing() {
                   const isActive = skuSort?.key === col;
                   const ascActive = isActive && skuSort?.dir === 'asc';
                   const descActive = isActive && skuSort?.dir === 'desc';
-                  const thCls = ['col-num', isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const thCls = [marketingSkuOtherColumnClass(col), isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
                   const onSort = () => {
                     setSkuSort((prev) => {
                       if (prev?.key !== col) return { key: col, dir: 'asc' };
@@ -2426,12 +2488,18 @@ export default function Marketing() {
                 pagedSkuRows.map((row, idx) => (
                   <tr key={row.id ?? idx}>
                     {SKU_TABLE_COLUMNS.map((col) => (
-                      <td key={col.id} className={col.id === 'last30Sales' || col.id === 'dos' || col.id === 'availableInventory' || col.id === 'impressions' || col.id === 'clicks' ? 'col-num' : ''}>
+                      <td key={col.id} className={marketingSkuMainColumnClass(col.id)}>
                         {row[col.id] ?? '—'}
                       </td>
                     ))}
                     {visibleOrderedSkuOtherColumns.map((col) => (
-                      <td key={col} className="col-num">{col === 'Date' ? (row[col] ? formatDateDDMonYY(row[col]) : '—') : (row[col] ?? '—')}</td>
+                      <td key={col} className={marketingSkuOtherColumnClass(col)}>
+                        {col === 'TACOS'
+                          ? formatCampaignTableCell('TACOS', getSkuTacosPercent(row))
+                          : col === 'Date'
+                            ? (row[col] ? formatDateDDMonYY(row[col]) : '—')
+                            : (row[col] ?? '—')}
+                      </td>
                     ))}
                     <td className="cell-actions">
                       <button type="button" className="btn-quick-actions" aria-label="Quick actions" title="Quick actions">⋮</button>
@@ -2868,16 +2936,16 @@ export default function Marketing() {
               <tr>
                 {(() => {
                   const baseCols = [
-                    { key: 'campaignType', label: 'Campaign Type', cls: '' },
-                    { key: 'campaignName', label: 'Campaign Name', cls: '' },
-                    { key: 'Impressions', label: 'Impressions', cls: 'col-num' },
-                    { key: 'Clicks', label: 'Clicks', cls: 'col-num' },
-                    { key: 'CTR', label: 'CTR', cls: 'col-num' },
-                    { key: 'CPC', label: 'CPC', cls: 'col-num' },
-                    { key: 'CVR', label: 'CVR', cls: 'col-num' },
-                    { key: 'Ad Spend', label: 'Ad Spend', cls: 'col-num' },
-                    { key: 'Ad Unit Sold', label: 'Ad Unit Sold', cls: 'col-num' },
-                    { key: 'Ad Sales', label: 'Ad Sales', cls: 'col-num' },
+                    { key: 'campaignType', label: 'Campaign Type' },
+                    { key: 'campaignName', label: 'Campaign Name' },
+                    { key: 'Impressions', label: 'Impressions' },
+                    { key: 'Clicks', label: 'Clicks' },
+                    { key: 'CTR', label: 'CTR' },
+                    { key: 'CPC', label: 'CPC' },
+                    { key: 'CVR', label: 'CVR' },
+                    { key: 'Ad Spend', label: 'Ad Spend' },
+                    { key: 'Ad Unit Sold', label: 'Ad Unit Sold' },
+                    { key: 'Ad Sales', label: 'Ad Sales' },
                   ];
                   const renderTh = (key, label, cls) => {
                     const isActive = campaignSort?.key === key;
@@ -2904,8 +2972,8 @@ export default function Marketing() {
                   };
                   return (
                     <>
-                      {baseCols.map((c) => renderTh(c.key, c.label, c.cls))}
-                      {visibleOrderedCampaignOtherColumns.map((col) => renderTh(col, col, 'col-num'))}
+                      {baseCols.map((c) => renderTh(c.key, c.label, marketingCampaignBaseColumnClass(c.key)))}
+                      {visibleOrderedCampaignOtherColumns.map((col) => renderTh(col, col, marketingCampaignOtherDetailClass(col)))}
                     </>
                   );
                 })()}
@@ -2917,16 +2985,16 @@ export default function Marketing() {
                   <tr key={`sk-${i}`}>
                     <td><Skeleton height={12} /></td>
                     <td><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
-                    <td className="col-num"><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('Impressions')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('Clicks')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('CTR')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('CPC')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('CVR')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('Ad Spend')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('Ad Unit Sold')}><Skeleton height={12} /></td>
+                    <td className={marketingCampaignBaseColumnClass('Ad Sales')}><Skeleton height={12} /></td>
                     {visibleOrderedCampaignOtherColumns.map((col) => (
-                      <td key={`${col}-${i}`} className="col-num">
+                      <td key={`${col}-${i}`} className={marketingCampaignOtherDetailClass(col)}>
                         <Skeleton height={12} />
                       </td>
                     ))}
@@ -2949,16 +3017,16 @@ export default function Marketing() {
                   <tr key={row.id ?? idx}>
                     <td>{row.campaignType ?? '—'}</td>
                     <td>{row.campaignName ?? '—'}</td>
-                    <td className="col-num">{formatCampaignTableCell('Impressions', readFirst(row, ['impressions', 'Impressions']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('Clicks', readFirst(row, ['clicks', 'Clicks']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('CTR', readFirst(row, ['CTR', 'ctr', 'click_thru_rate_(ctr)', 'click_thru_rate', 'click_through_rate']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('CPC', readFirst(row, ['CPC', 'cpc', 'cost_per_click_(cpc)', 'cost_per_click', 'costPerClick']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('CVR', readFirst(row, ['CVR', 'cvr', 'conversion_rate', 'cvr_(%)', 'cvr%']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('Ad Spend', readFirst(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('Ad Unit Sold', readFirst(row, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold', 'ad_unit_sold']))}</td>
-                    <td className="col-num">{formatCampaignTableCell('Ad Sales', readFirst(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('Impressions')}>{formatCampaignTableCell('Impressions', readFirst(row, ['impressions', 'Impressions']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('Clicks')}>{formatCampaignTableCell('Clicks', readFirst(row, ['clicks', 'Clicks']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('CTR')}>{formatCampaignTableCell('CTR', readFirst(row, ['CTR', 'ctr', 'click_thru_rate_(ctr)', 'click_thru_rate', 'click_through_rate']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('CPC')}>{formatCampaignTableCell('CPC', readFirst(row, ['CPC', 'cpc', 'cost_per_click_(cpc)', 'cost_per_click', 'costPerClick']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('CVR')}>{formatCampaignTableCell('CVR', readFirst(row, ['CVR', 'cvr', 'conversion_rate', 'cvr_(%)', 'cvr%']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('Ad Spend')}>{formatCampaignTableCell('Ad Spend', readFirst(row, ['Ad Spend', 'adSpend', 'ads_spend', 'ad_spend']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('Ad Unit Sold')}>{formatCampaignTableCell('Ad Unit Sold', readFirst(row, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold', 'ad_unit_sold']))}</td>
+                    <td className={marketingCampaignBaseColumnClass('Ad Sales')}>{formatCampaignTableCell('Ad Sales', readFirst(row, ['Ad Sales', 'adSales', 'ads_sales', 'ad_sales']))}</td>
                     {visibleOrderedCampaignOtherColumns.map((col) => (
-                      <td key={col} className="col-num">
+                      <td key={col} className={marketingCampaignOtherDetailClass(col)}>
                         {(() => {
                           // Allow both backend-friendly labels and raw DB keys.
                           const direct =

@@ -551,6 +551,11 @@ export default function ExecutiveSummary() {
           text-overflow: ellipsis;
         }
 
+        /* Deep-dive revenue / units: left-aligned like ASIN & product name, tabular figures */
+        .exec-summary .table-wrap .exec-deep-dive-metric {
+          font-variant-numeric: tabular-nums;
+        }
+
         /* Executive Summary deep-dive: sortable header button */
         .exec-summary .table-wrap th .th-sort-btn {
           appearance: none;
@@ -821,10 +826,10 @@ export default function ExecutiveSummary() {
                         const currLabel = formatPeriodLabel(deepDiveMeta.currentLabel);
                         const cols = [
                           { key: 'productName', label: 'Product Name', cls: 'exec-deep-dive-product-name' },
-                          { key: 'previousRevenue', label: `Revenue (${prevLabel})`, cls: 'col-num' },
-                          { key: 'currentRevenue', label: `Revenue (${currLabel})`, cls: 'col-num' },
-                          { key: 'previousUnits', label: `Units Sold (${prevLabel})`, cls: 'col-num' },
-                          { key: 'currentUnits', label: `Units Sold (${currLabel})`, cls: 'col-num' },
+                          { key: 'previousRevenue', label: `Revenue (${prevLabel})`, cls: 'exec-deep-dive-metric' },
+                          { key: 'currentRevenue', label: `Revenue (${currLabel})`, cls: 'exec-deep-dive-metric' },
+                          { key: 'previousUnits', label: `Units Sold (${prevLabel})`, cls: 'exec-deep-dive-metric' },
+                          { key: 'currentUnits', label: `Units Sold (${currLabel})`, cls: 'exec-deep-dive-metric' },
                           { key: 'pctDiff', label: '% Diff', cls: 'col-num' },
                         ];
                         return cols.map((c) => {
@@ -875,10 +880,10 @@ export default function ExecutiveSummary() {
                             {row.productName ? truncateText(row.productName, 35) : '—'}
                           </div>
                         </td>
-                        <td className="col-num">{formatAedRounded(row.previousRevenue)}</td>
-                        <td className="col-num">{formatAedRounded(row.currentRevenue)}</td>
-                        <td className="col-num">{(Number(row.previousUnits) || 0).toLocaleString()}</td>
-                        <td className="col-num">{(Number(row.currentUnits) || 0).toLocaleString()}</td>
+                        <td className="exec-deep-dive-metric">{formatAedRounded(row.previousRevenue)}</td>
+                        <td className="exec-deep-dive-metric">{formatAedRounded(row.currentRevenue)}</td>
+                        <td className="exec-deep-dive-metric">{(Number(row.previousUnits) || 0).toLocaleString()}</td>
+                        <td className="exec-deep-dive-metric">{(Number(row.currentUnits) || 0).toLocaleString()}</td>
                         <td className="col-num">
                           {row.pctChangeRevenue == null ? (
                             (Number(row.previousRevenue) || 0) === 0 && (Number(row.currentRevenue) || 0) > 0 ? (

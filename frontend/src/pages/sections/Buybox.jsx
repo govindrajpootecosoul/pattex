@@ -77,6 +77,46 @@ const BUYBOX_COLUMN_OPTIONS = [
   { id: 'currentOwnerMOQ', label: 'Current Owner MOQ' },
 ];
 
+/** Detailed table: text columns (default alignment). */
+const BUYBOX_TEXT_COLUMN_IDS = new Set([
+  'brand',
+  'asin',
+  'productName',
+  'productCategory',
+  'packType',
+  'packSize',
+  'currentOwner',
+  'hijacker1',
+  'hijacker2',
+  'hijacker3',
+  'productSubCategory',
+  'reportDate',
+  'salesChannel',
+  'oosDate',
+  'stockStatus',
+  'noLowStockWtOpenPOs',
+  'noLowStockWtNoOpenPOs',
+]);
+
+/** Right-aligned like Inventory instock % / Revenue TACOS */
+const BUYBOX_PCT_COLUMN_IDS = new Set(['vendorConfirmationPct', 'receiveFillRate', 'instockRate']);
+
+const BUYBOX_DETAILED_METRIC_COLUMN_IDS = new Set(
+  BUYBOX_COLUMN_OPTIONS.map((c) => c.id).filter(
+    (id) => !BUYBOX_TEXT_COLUMN_IDS.has(id) && !BUYBOX_PCT_COLUMN_IDS.has(id),
+  ),
+);
+
+function buyboxDetailedViewThClass(columnId, sortActiveClass) {
+  const parts = [];
+  if (columnId === 'productName') parts.push('buybox-col-product-name');
+  else if (columnId === 'productCategory') parts.push('buybox-col-product-category');
+  if (BUYBOX_PCT_COLUMN_IDS.has(columnId)) parts.push('col-num');
+  else if (BUYBOX_DETAILED_METRIC_COLUMN_IDS.has(columnId)) parts.push('buybox-detailed-metric');
+  if (sortActiveClass) parts.push(sortActiveClass);
+  return parts.join(' ');
+}
+
 const BUYBOX_COLUMN_ORDER_STORAGE_KEY = 'pattex.buybox.columnOrder.v1';
 const BUYBOX_VISIBLE_COLUMNS_STORAGE_KEY = 'pattex.buybox.visibleColumns.v1';
 
@@ -1323,6 +1363,14 @@ export default function Buybox() {
           font: inherit;
         }
 
+        .buybox-table-wrap th.col-num .th-sort-btn {
+          justify-content: flex-end;
+        }
+
+        .buybox-table-wrap .buybox-detailed-metric {
+          font-variant-numeric: tabular-nums;
+        }
+
         .buybox-table-wrap th .th-sort-icons {
           display: inline-flex;
           flex-direction: row;
@@ -1639,17 +1687,13 @@ export default function Buybox() {
                   if (!def) return null;
                   if (!visibleColumns[id]) return null;
                   const isSortable = id !== 'brand' && id !== 'asin';
-                  const cls =
-                    id === 'productName'
-                      ? 'buybox-col-product-name'
-                      : id === 'productCategory'
-                        ? 'buybox-col-product-category'
-                        : '';
-                  if (!isSortable) return <th key={id} className={cls}>{def.label}</th>;
+                  if (!isSortable) {
+                    return <th key={id} className={buyboxDetailedViewThClass(id, '')}>{def.label}</th>;
+                  }
                   const isActive = sort?.key === id;
                   const ascActive = isActive && sort?.dir === 'asc';
                   const descActive = isActive && sort?.dir === 'desc';
-                  const thCls = [cls, isActive ? 'th-sort-active' : ''].filter(Boolean).join(' ');
+                  const thCls = buyboxDetailedViewThClass(id, isActive ? 'th-sort-active' : '');
                   const onSort = () => {
                     setSort((prev) => {
                       if (prev?.key !== id) return { key: id, dir: 'asc' };
@@ -1676,12 +1720,7 @@ export default function Buybox() {
                 <tr key={row._id ?? row.id ?? row.asin ?? `${row.productName || 'row'}-${row.reportDate || ''}`}>
                   {visibleOrderedColumnIds.map((id) => {
                     if (!visibleColumns[id]) return null;
-                    const cls =
-                      id === 'productName'
-                        ? 'buybox-col-product-name'
-                        : id === 'productCategory'
-                          ? 'buybox-col-product-category'
-                          : '';
+                    const cls = buyboxDetailedViewThClass(id, '');
                     return <td key={id} className={cls}>{renderCellByColumnId(id, row)}</td>;
                   })}
                 </tr>

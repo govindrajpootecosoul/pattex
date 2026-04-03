@@ -1386,6 +1386,11 @@ export default function Revenue() {
           text-overflow: ellipsis;
         }
 
+        /* Detailed view: revenue + unit columns left-aligned (match Executive Summary deep-dive) */
+        .revenue-table-wrap .revenue-detailed-metric {
+          font-variant-numeric: tabular-nums;
+        }
+
         /* Title left; T-3 note + “Data updated” stacked on the right */
         .revenue-kpi-header-right {
           display: flex;
@@ -1758,24 +1763,25 @@ export default function Revenue() {
                   if (!visibleColumns[id]) return null;
                   const col = columnDefsById[id];
                   if (!col) return null;
-                  const numCols = new Set([
+                  const revenueUnitsCols = new Set([
                     'overallUnit',
                     'overallRevenue',
                     'adUnit',
                     'adRevenue',
                     'organicUnit',
                     'organicRevenue',
-                    'aov',
-                    'tacos',
                   ]);
+                  const metricColsRight = new Set(['aov', 'tacos']);
                   const baseCls =
                     id === 'productName'
                       ? 'revenue-col-product-name'
                       : id === 'salesChannel'
                         ? 'revenue-col-sales-channel'
-                        : numCols.has(id)
-                          ? 'col-num'
-                          : '';
+                        : revenueUnitsCols.has(id)
+                          ? 'revenue-detailed-metric'
+                          : metricColsRight.has(id)
+                            ? 'col-num'
+                            : '';
                   const isSortable = new Set([
                     'productName',
                     'productCategory',
@@ -1853,12 +1859,12 @@ export default function Revenue() {
                           </td>
                         );
                       }
-                      if (id === 'overallUnit') return <td key={id} className="col-num">{Number(row.overallUnit) || 0}</td>;
-                      if (id === 'overallRevenue') return <td key={id} className="col-num">AED {Math.round(overallRevenue).toLocaleString()}</td>;
-                      if (id === 'adUnit') return <td key={id} className="col-num">{Number(row.adUnit) || 0}</td>;
-                      if (id === 'adRevenue') return <td key={id} className="col-num">AED {Math.round(adRevenue).toLocaleString()}</td>;
-                      if (id === 'organicUnit') return <td key={id} className="col-num">{Number(row.organicUnit) || 0}</td>;
-                      if (id === 'organicRevenue') return <td key={id} className="col-num">AED {Math.round(organicRevenue).toLocaleString()}</td>;
+                      if (id === 'overallUnit') return <td key={id} className="revenue-detailed-metric">{Number(row.overallUnit) || 0}</td>;
+                      if (id === 'overallRevenue') return <td key={id} className="revenue-detailed-metric">AED {Math.round(overallRevenue).toLocaleString()}</td>;
+                      if (id === 'adUnit') return <td key={id} className="revenue-detailed-metric">{Number(row.adUnit) || 0}</td>;
+                      if (id === 'adRevenue') return <td key={id} className="revenue-detailed-metric">AED {Math.round(adRevenue).toLocaleString()}</td>;
+                      if (id === 'organicUnit') return <td key={id} className="revenue-detailed-metric">{Number(row.organicUnit) || 0}</td>;
+                      if (id === 'organicRevenue') return <td key={id} className="revenue-detailed-metric">AED {Math.round(organicRevenue).toLocaleString()}</td>;
                       if (id === 'aov') return <td key={id} className="col-num">{(Number(row.aov) || 0).toFixed(2)}</td>;
                       if (id === 'tacos') return <td key={id} className="col-num">{tacosPct.toFixed(1)}%</td>;
                       return null;

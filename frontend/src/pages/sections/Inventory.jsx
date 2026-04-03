@@ -931,6 +931,11 @@ export default function Inventory() {
           overflow: hidden;
           text-overflow: ellipsis;
         }
+
+        /* Detailed report: quantities, revenue, DOS, open POs left; instock % stays col-num */
+        .inventory-table-wrap .inventory-detailed-metric {
+          font-variant-numeric: tabular-nums;
+        }
       `}</style>
       <div className="card inventory-filters-card">
         <div className="filter-row filter-row-one">
@@ -1172,15 +1177,18 @@ export default function Inventory() {
                   if (!visibleColumns[id]) return null;
                   const col = columnDefsById[id];
                   if (!col) return null;
-                  const numCols = new Set(['available', 'sales30', 'dos', 'instockRate', 'openPos']);
+                  const quantityRevenueCols = new Set(['available', 'sales30', 'dos', 'openPos']);
+                  const metricColsRight = new Set(['instockRate']);
                   const baseCls =
                     id === 'productName'
                       ? 'inventory-col-product-name'
                       : id === 'category'
                         ? 'inventory-col-category'
-                        : numCols.has(id)
-                          ? 'col-num'
-                          : '';
+                        : quantityRevenueCols.has(id)
+                          ? 'inventory-detailed-metric'
+                          : metricColsRight.has(id)
+                            ? 'col-num'
+                            : '';
                   const isSortable = new Set(['productName', 'category', 'packSize', 'available', 'sales30', 'dos', 'instockRate', 'openPos']).has(id);
                   const isActive = sort?.key === id;
                   const ascActive = isActive && sort?.dir === 'asc';
@@ -1243,10 +1251,10 @@ export default function Inventory() {
                     }
                     if (id === 'packSize') return <td key={id}>{row.packSize}</td>;
                     if (id === 'channel') return <td key={id}>{row.channel}</td>;
-                    if (id === 'available') return <td key={id} className="col-num">{row.available}</td>;
+                    if (id === 'available') return <td key={id} className="inventory-detailed-metric">{row.available}</td>;
                     if (id === 'sales30') {
                       return (
-                        <td key={id} className="col-num">
+                        <td key={id} className="inventory-detailed-metric">
                           AED {Math.round(
                             last30SalesByAsin[row.asin] != null
                               ? last30SalesByAsin[row.asin]
@@ -1255,9 +1263,9 @@ export default function Inventory() {
                         </td>
                       );
                     }
-                    if (id === 'dos') return <td key={id} className="col-num">{row.dos}</td>;
+                    if (id === 'dos') return <td key={id} className="inventory-detailed-metric">{row.dos}</td>;
                     if (id === 'instockRate') return <td key={id} className="col-num">{row.instockRate}%</td>;
-                    if (id === 'openPos') return <td key={id} className="col-num">{row.openPos}</td>;
+                    if (id === 'openPos') return <td key={id} className="inventory-detailed-metric">{row.openPos}</td>;
                     if (id === 'status') {
                       return (
                         <td key={id}>
