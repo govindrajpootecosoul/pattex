@@ -109,6 +109,63 @@ function truncateText(value, maxChars) {
   return `${s.slice(0, maxChars)}...`;
 }
 
+/**
+ * One row per ASIN: sum available, last-30 sales, open POs; average DOS and instock %.
+ * Rows without an ASIN are kept as-is.
+ */
+function mergeInventoryRowsByAsin(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const withoutAsin = [];
+  const byAsin = new Map();
+  for (const row of rows) {
+    const asin = String(row?.asin ?? '').trim();
+    if (!asin) {
+      withoutAsin.push(row);
+      continue;
+    }
+    if (!byAsin.has(asin)) byAsin.set(asin, []);
+    byAsin.get(asin).push(row);
+  }
+  const merged = [];
+  for (const [asin, group] of byAsin) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+    const base = { ...group[0] };
+    let available = 0;
+    let last30DaysSales = 0;
+    let openPos = 0;
+    let dosSum = 0;
+    let instockSum = 0;
+    const n = group.length;
+    let noLowStockWithOpenPos = 0;
+    let noLowStockNoOpenPos = 0;
+    for (const r of group) {
+      available += Number(r.available) || 0;
+      last30DaysSales += Number(r.last30DaysSales) || 0;
+      openPos += Number(r.openPos) || 0;
+      dosSum += Number(r.dos) || 0;
+      instockSum += Number(r.instockRate) || 0;
+      noLowStockWithOpenPos = Math.max(noLowStockWithOpenPos, Number(r.noLowStockWithOpenPos) || 0);
+      noLowStockNoOpenPos = Math.max(noLowStockNoOpenPos, Number(r.noLowStockNoOpenPos) || 0);
+    }
+    merged.push({
+      ...base,
+      id: `merged-${asin}`,
+      asin,
+      available,
+      last30DaysSales,
+      openPos,
+      dos: n > 0 ? Math.round(dosSum / n) : 0,
+      instockRate: n > 0 ? Math.round(instockSum / n) : 0,
+      noLowStockWithOpenPos,
+      noLowStockNoOpenPos,
+    });
+  }
+  return [...merged, ...withoutAsin];
+}
+
 function csvEscape(field) {
   const s = field == null ? '' : String(field);
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -289,8 +346,9 @@ export default function Inventory() {
       const searchable = [
         row.asin,
         row.productName,
-        row.category,
+        getRowProductCategory(row),
         row.channel,
+        row.salesChannel,
       ]
         .filter(Boolean)
         .map((s) => String(s).toLowerCase());
@@ -299,7 +357,11 @@ export default function Inventory() {
     if (filters.asin && row.asin !== filters.asin) return false;
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && getRowProductCategory(row) !== filters.category) return false;
-    if (filters.channel && (row.channel || row.salesChannel) !== filters.channel) return false;
+    if (filters.channel) {
+      const selected = String(filters.channel || '').trim().toLowerCase();
+      const rowVal = String(row.channel || row.salesChannel || '').trim().toLowerCase();
+      if (selected && rowVal !== selected) return false;
+    }
     return true;
   };
 
@@ -359,19 +421,26 @@ export default function Inventory() {
     [filteredRowsNoDate, selectedDate],
   );
 
-  const summary = computeSummary(filteredRows);
+  const aggregatedFilteredRows = useMemo(
+    () => mergeInventoryRowsByAsin(filteredRows),
+    [filteredRows],
+  );
 
-  // last30DaysSales on each row is summed on the server from Revenue for up to 30 days
-  // ending on selectedDate (only days that exist in Revenue are included).
+  const summary = useMemo(
+    () => computeSummary(aggregatedFilteredRows),
+    [aggregatedFilteredRows],
+  );
+
+  // After ASIN merge, at most one row per ASIN — map still supports display/CSV helpers.
   const last30SalesByAsin = useMemo(() => {
     const map = {};
-    filteredRows.forEach((row) => {
+    aggregatedFilteredRows.forEach((row) => {
       const asin = row.asin;
       if (!asin) return;
       map[asin] = Number(row.last30DaysSales) || 0;
     });
     return map;
-  }, [filteredRows]);
+  }, [aggregatedFilteredRows]);
 
   // Cascading filter handlers
   const handleCategoryChange = (e) => {
@@ -398,19 +467,10 @@ export default function Inventory() {
   const handleAsinChange = (e) => {
     const value = e.target.value;
     if (!value) {
-      // When ASIN is cleared manually, keep parent selections
       setFilters((prev) => ({ ...prev, asin: '' }));
       return;
     }
-
-    // Reverse auto-population: infer product + category from ASIN
-    const match = rows.find((r) => r.asin === value);
-    setFilters((prev) => ({
-      ...prev,
-      asin: value,
-      productName: match?.productName || prev.productName,
-      category: match?.category || prev.category,
-    }));
+    setFilters((prev) => ({ ...prev, asin: value }));
   };
 
   const toggleColumn = (id) => {
@@ -460,37 +520,6 @@ export default function Inventory() {
         return row.status || 'Active';
       default:
         return '';
-    }
-  };
-
-  const downloadDetailedInventoryCsv = () => {
-    setCsvExportError('');
-    setCsvDownloading(true);
-    try {
-      const activeCols = visibleOrderedColumnIds.filter((id) => visibleColumns[id]);
-      if (activeCols.length === 0) {
-        setCsvExportError('Select at least one column to export.');
-        return;
-      }
-      const header = activeCols.map((id) => csvEscape(columnDefsById[id]?.label || id)).join(',');
-      const lines = [header];
-      for (const row of filteredRows) {
-        lines.push(activeCols.map((id) => csvEscape(formatInventoryRowCsvValue(id, row))).join(','));
-      }
-      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const safeStock = String(stockFilter || 'ALL').replace(/[^a-z0-9_-]/gi, '_');
-      a.download = `inventory-detailed-${safeStock}-${selectedDate || 'date'}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setCsvExportError(e?.message || 'Could not download CSV.');
-    } finally {
-      setCsvDownloading(false);
     }
   };
 
@@ -630,7 +659,7 @@ export default function Inventory() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row) => (
+                {aggregatedFilteredRows.map((row) => (
                   <tr key={row.id}>
                     {metricModal === METRIC_IDS.AVAILABLE && (
                       <>
@@ -730,13 +759,44 @@ export default function Inventory() {
       return as.localeCompare(bs, undefined, { sensitivity: 'base', numeric: true });
     };
 
-    const base = [...filteredRows];
+    const base = [...aggregatedFilteredRows];
     base.sort((a, b) => {
       const c = compare(a, b);
       return dir === 'desc' ? -c : c;
     });
     return base;
-  }, [filteredRows, last30SalesByAsin, sort]);
+  }, [aggregatedFilteredRows, last30SalesByAsin, sort]);
+
+  const downloadDetailedInventoryCsv = () => {
+    setCsvExportError('');
+    setCsvDownloading(true);
+    try {
+      const activeCols = visibleOrderedColumnIds.filter((id) => visibleColumns[id]);
+      if (activeCols.length === 0) {
+        setCsvExportError('Select at least one column to export.');
+        return;
+      }
+      const header = activeCols.map((id) => csvEscape(columnDefsById[id]?.label || id)).join(',');
+      const lines = [header];
+      for (const row of sortedRows) {
+        lines.push(activeCols.map((id) => csvEscape(formatInventoryRowCsvValue(id, row))).join(','));
+      }
+      const blob = new Blob([`\ufeff${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeStock = String(stockFilter || 'ALL').replace(/[^a-z0-9_-]/gi, '_');
+      a.download = `inventory-detailed-${safeStock}-${selectedDate || 'date'}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCsvExportError(e?.message || 'Could not download CSV.');
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
 
   if (loading) return <div className="section-muted">Loading...</div>;
   if (error) return <div className="auth-error">{error}</div>;
@@ -885,13 +945,13 @@ export default function Inventory() {
           </div>
           <div className="filter-group">
             <select
-              value={filters.asin}
-              onChange={handleAsinChange}
+              value={filters.category}
+              onChange={handleCategoryChange}
             >
-              <option value="">ASIN</option>
-              {asinOptions.map((asin) => (
-                <option key={asin} value={asin}>
-                  {asin}
+              <option value="">{filters.category ? 'Select All' : 'Product Category'}</option>
+              {categoryOptions.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
                 </option>
               ))}
             </select>
@@ -901,7 +961,7 @@ export default function Inventory() {
               value={filters.productName}
               onChange={handleProductNameChange}
             >
-              <option value="">Product Name</option>
+              <option value="">{filters.productName ? 'Select All' : 'Product Name'}</option>
               {productNameOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -911,13 +971,14 @@ export default function Inventory() {
           </div>
           <div className="filter-group">
             <select
-              value={filters.category}
-              onChange={handleCategoryChange}
+              value={filters.asin}
+              onChange={handleAsinChange}
+              aria-label="ASIN"
             >
-              <option value="">Product Category</option>
-              {categoryOptions.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
+              <option value="">{filters.asin ? 'Select All' : 'ASIN'}</option>
+              {asinOptions.map((asin) => (
+                <option key={asin} value={asin}>
+                  {asin}
                 </option>
               ))}
             </select>

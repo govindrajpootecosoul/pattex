@@ -136,6 +136,181 @@ const pick = (row, keys) => {
   return undefined;
 };
 
+function getRowProductCategory(row) {
+  if (!row) return '';
+  return (
+    row.productCategory ??
+    row.product_category ??
+    row.category ??
+    row['Product Category'] ??
+    row['Product Sub Category'] ??
+    row.productSubCategory ??
+    ''
+  );
+}
+
+/** Collapse duplicate ASINs: sum inventory/sales/units and additive metrics; average DOS, rates, ideal prices; last row wins for Current Owner. */
+function mergeBuyboxRowsByAsin(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const sumPick = (group, keys) =>
+    group.reduce((s, r) => s + parseNumLoose(pick(r, keys)), 0);
+
+  const avgPickInt = (group, keys) => {
+    const n = group.length;
+    if (!n) return 0;
+    return Math.round(group.reduce((s, r) => s + parseNumLoose(pick(r, keys)), 0) / n);
+  };
+
+  const avgPickFloat = (group, keys) => {
+    const n = group.length;
+    if (!n) return 0;
+    return Math.round((group.reduce((s, r) => s + parseNumLoose(pick(r, keys)), 0) / n) * 100) / 100;
+  };
+
+  const minPick = (group, keys) =>
+    Math.min(...group.map((r) => parseNumLoose(pick(r, keys))));
+  const maxPick = (group, keys) =>
+    Math.max(...group.map((r) => parseNumLoose(pick(r, keys))));
+
+  const withoutAsin = [];
+  const byAsin = new Map();
+  for (const row of rows) {
+    const asin = String(row?.asin ?? '').trim();
+    if (!asin) {
+      withoutAsin.push(row);
+      continue;
+    }
+    if (!byAsin.has(asin)) byAsin.set(asin, []);
+    byAsin.get(asin).push(row);
+  }
+
+  const merged = [];
+  for (const [asin, group] of byAsin) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+
+    const base = { ...group[0] };
+    const last = group[group.length - 1];
+    const owner =
+      pick(last, ['Current Owner', 'currentOwner', 'currentBuyboxOwner']) ?? last.currentBuyboxOwner ?? '';
+
+    const sAvail = sumPick(group, ['Available Inventory', 'availableInventory']);
+    const sTotalSales = sumPick(group, ['totalSales', 'total_sales']);
+    const sTotalUnits = sumPick(group, ['totalUnits', 'total_units']);
+    const sOpen = sumPick(group, ['Open POs', 'openPOs', 'openPos']);
+    const sVc = sumPick(group, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']);
+    const sSc = sumPick(group, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']);
+    const sAged90Amt = sumPick(group, ['Aged 90+ Days Sellable Inventory', 'aged90PlusSellableInventory']);
+    const sAged90Units = sumPick(group, ['Aged 90+ Days Sellable Units', 'aged90PlusSellableUnits']);
+    const sSellable = sumPick(group, ['Sellable Inventory Amount', 'sellableInventoryAmount']);
+    const sUnsellAmt = sumPick(group, ['Unsellable On Hand Inventory Amount', 'unsellableOnHandInventoryAmount']);
+    const sUnsellUnits = sumPick(group, ['Unsellable On Hand Units', 'unsellableOnHandUnits']);
+    const sPoAmt = sumPick(group, ['PO_received_amount', 'poReceivedAmount']);
+    const sPoUnits = sumPick(group, ['PO_received_Units', 'poReceivedUnits']);
+
+    const dos = avgPickInt(group, ['DOS', 'dos']);
+    const instockRate = avgPickInt(group, ['Instock Rate', 'instockRate']);
+    const sellThrough = avgPickFloat(group, ['sell_through', 'sellThrough']);
+    const cumInstock = avgPickInt(group, ['cumulative_instock_days', 'cumulativeInstockDays']);
+    const vendorConf = avgPickFloat(group, ['Vendor Confirmation %', 'vendorConfirmationPct']);
+    const recvFill = avgPickFloat(group, ['Receive_Fill_Rate', 'receiveFillRate']);
+    const leadDays = avgPickFloat(group, ['Overall Vendor Lead Time (days)', 'overallVendorLeadTimeDays']);
+
+    const scIdeal = avgPickFloat(group, ['SC Ideal Price', 'scIdealPrice']);
+    const vcIdeal = avgPickFloat(group, ['VC Ideal Price', 'vcIdealPrice']);
+    const ownerPrice = avgPickFloat(group, ['Current Owner Price', 'currentOwnerPrice', 'currentBuyboxPrice']);
+
+    const minQ = minPick(group, ['min_available_qty', 'minAvailableQty']);
+    const maxQ = maxPick(group, ['max_available_qty', 'maxAvailableQty']);
+
+    const lowOpen = Math.max(
+      ...group.map((r) => parseNumLoose(pick(r, ['No/Low Stock wt Open POs', 'noLowStockWtOpenPOs']))),
+    );
+    const lowNoOpen = Math.max(
+      ...group.map((r) => parseNumLoose(pick(r, ['No/Low Stock wt no Open POs', 'noLowStockWtNoOpenPOs']))),
+    );
+
+    Object.assign(base, {
+      id: `merged-${asin}`,
+      _id: `merged-${asin}`,
+      asin,
+      availableInventory: sAvail,
+      last30DaysSales: sTotalSales,
+      totalSales: sTotalSales,
+      totalUnits: sTotalUnits,
+      openPos: sOpen,
+      openPOs: sOpen,
+      dos,
+      instockRate,
+      sellThrough,
+      cumulativeInstockDays: cumInstock,
+      aged90Amount: sAged90Amt,
+      aged90Units: sAged90Units,
+      sellableInventoryAmount: sSellable,
+      unsellableOnHandAmount: sUnsellAmt,
+      unsellableOnHandUnits: sUnsellUnits,
+      minAvailableQty: minQ,
+      maxAvailableQty: maxQ,
+      currentBuyboxOwner: owner,
+      currentBuyboxPrice: ownerPrice,
+      currentScPrice: scIdeal,
+      currentVcPrice: vcIdeal,
+      'Available Inventory': sAvail,
+      total_sales: sTotalSales,
+      total_units: sTotalUnits,
+      'Open POs': sOpen,
+      DOS: dos,
+      'Instock Rate': instockRate,
+      sell_through: sellThrough,
+      cumulative_instock_days: cumInstock,
+      'Aged 90+ Days Sellable Inventory': sAged90Amt,
+      'Aged 90+ Days Sellable Units': sAged90Units,
+      'Sellable Inventory Amount': sSellable,
+      'Unsellable On Hand Inventory Amount': sUnsellAmt,
+      'Unsellable On Hand Units': sUnsellUnits,
+      PO_received_amount: sPoAmt,
+      PO_received_Units: sPoUnits,
+      'Vendor Confirmation %': vendorConf,
+      Receive_Fill_Rate: recvFill,
+      'Overall Vendor Lead Time (days)': leadDays,
+      'SC Ideal Price': scIdeal,
+      'VC Ideal Price': vcIdeal,
+      'Current Owner': owner,
+      'Current Owner Price': ownerPrice,
+      min_available_qty: minQ,
+      max_available_qty: maxQ,
+      'No/Low Stock wt Open POs': lowOpen,
+      'No/Low Stock wt no Open POs': lowNoOpen,
+      vcAvailableInventory: sVc,
+      scAvailableInventory: sSc,
+      'VC Available Inventory': sVc,
+      'SC Available Inventory': sSc,
+    });
+
+    for (let i = 1; i <= 10; i += 1) {
+      const hp = avgPickFloat(group, [`Hijacker ${i} Price`, `hijacker${i}Price`]);
+      const hm = avgPickFloat(group, [`Hijacker ${i} MOQ`, `hijacker${i}MOQ`]);
+      base[`Hijacker ${i} Price`] = hp;
+      base[`hijacker${i}Price`] = hp;
+      base[`Hijacker ${i} MOQ`] = hm;
+      base[`hijacker${i}MOQ`] = hm;
+    }
+
+    const inStockMax = Math.max(
+      ...group.map((r) => parseNumLoose(pick(r, ['in_stock_flag', 'inStockFlag']))),
+    );
+    base.inStockFlag = inStockMax;
+    base.in_stock_flag = inStockMax;
+
+    merged.push(base);
+  }
+
+  return [...merged, ...withoutAsin];
+}
+
 export default function Buybox() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -358,28 +533,43 @@ export default function Buybox() {
     return rows.filter((row) => normalizeReportDate(row.reportDate) === selectedDate);
   }, [rows, selectedDate]);
 
-  const asinOptions = useMemo(
-    () => Array.from(new Set(rowsForSelectedDate.map((r) => r.asin).filter(Boolean))),
-    [rowsForSelectedDate],
-  );
-  const productNameOptions = useMemo(
-    () => Array.from(new Set(rowsForSelectedDate.map((r) => r.productName).filter(Boolean))),
-    [rowsForSelectedDate],
-  );
   const categoryOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          rowsForSelectedDate
-            .map((r) => r.productCategory)
-            .filter(Boolean),
-        ),
-      ),
+    () => Array.from(new Set(rowsForSelectedDate.map(getRowProductCategory).filter(Boolean))),
     [rowsForSelectedDate],
   );
+
+  const rowsForProductNames = useMemo(
+    () =>
+      filters.category
+        ? rowsForSelectedDate.filter((r) => getRowProductCategory(r) === filters.category)
+        : rowsForSelectedDate,
+    [rowsForSelectedDate, filters.category],
+  );
+
+  const productNameOptions = useMemo(
+    () => Array.from(new Set(rowsForProductNames.map((r) => r.productName).filter(Boolean))),
+    [rowsForProductNames],
+  );
+
+  const rowsForAsins = useMemo(
+    () =>
+      filters.productName
+        ? rowsForProductNames.filter((r) => r.productName === filters.productName)
+        : rowsForProductNames,
+    [rowsForProductNames, filters.productName],
+  );
+
+  const asinOptions = useMemo(
+    () => Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean))),
+    [rowsForAsins],
+  );
+
   const packSizeOptions = useMemo(
-    () => Array.from(new Set(rowsForSelectedDate.map((r) => r.packSize).filter(Boolean))),
-    [rowsForSelectedDate],
+    () =>
+      Array.from(new Set(rowsForProductNames.map((r) => r.packSize).filter(Boolean))).sort((a, b) =>
+        String(a).localeCompare(String(b)),
+      ),
+    [rowsForProductNames],
   );
   // Use API-provided list (all unique Sales Channels in DB) when available; else derive from current rows
   const channelOptions = useMemo(() => {
@@ -419,9 +609,11 @@ export default function Buybox() {
           const searchable = [
             row.asin,
             row.productName,
-            row.productCategory,
+            getRowProductCategory(row),
             row.packSize,
             row.channel,
+            row.salesChannel,
+            row['Sales Channel'],
           ]
             .filter(Boolean)
             .map((s) => String(s).toLowerCase());
@@ -432,7 +624,7 @@ export default function Buybox() {
       }
       if (filters.asin && row.asin !== filters.asin) return false;
       if (filters.productName && row.productName !== filters.productName) return false;
-      if (filters.category && row.productCategory !== filters.category) return false;
+      if (filters.category && getRowProductCategory(row) !== filters.category) return false;
       if (filters.packSize && row.packSize !== filters.packSize) return false;
       const channelValue = String(row.salesChannel || row.channel || row['Sales Channel'] || '').trim();
       if (filters.channel && channelValue.toLowerCase() !== filters.channel.toLowerCase()) return false;
@@ -454,12 +646,22 @@ export default function Buybox() {
     [previousDayRows, rowMatchesBuyboxFilters],
   );
 
+  const aggregatedFilteredRows = useMemo(
+    () => mergeBuyboxRowsByAsin(filteredRows),
+    [filteredRows],
+  );
+
+  const aggregatedPreviousDayRows = useMemo(
+    () => mergeBuyboxRowsByAsin(filteredPreviousDayRows),
+    [filteredPreviousDayRows],
+  );
+
   const summaryComputed = useMemo(() => {
-    if (!filteredRows.length) {
+    if (!aggregatedFilteredRows.length) {
       return { overallBuyboxPct: 0, noBuyboxSkus: 0, amazonAeCount: 0 };
     }
     const asinToOwner = new Map();
-    filteredRows.forEach((r) => {
+    aggregatedFilteredRows.forEach((r) => {
       if (r.asin) asinToOwner.set(r.asin, normalizeOwner(r.currentBuyboxOwner));
     });
     const uniqueAsins = [...asinToOwner.keys()];
@@ -469,16 +671,16 @@ export default function Buybox() {
     const noBuyboxSkus = uniqueAsins.filter((asin) => !(asinToOwner.get(asin) || '').includes('amazon.ae')).length;
     const overallBuyboxPct = Math.round((amazonAeCount / totalAsins) * 100);
     return { overallBuyboxPct, noBuyboxSkus, amazonAeCount };
-  }, [filteredRows]);
+  }, [aggregatedFilteredRows]);
 
   const summary = summaryComputed;
 
   const summaryPreviousDay = useMemo(() => {
-    if (!filteredPreviousDayRows.length) {
+    if (!aggregatedPreviousDayRows.length) {
       return { overallBuyboxPct: 0, noBuyboxSkus: 0, amazonAeCount: 0 };
     }
     const asinToOwner = new Map();
-    filteredPreviousDayRows.forEach((r) => {
+    aggregatedPreviousDayRows.forEach((r) => {
       if (r.asin) asinToOwner.set(r.asin, normalizeOwner(r.currentBuyboxOwner));
     });
     const uniqueAsins = [...asinToOwner.keys()];
@@ -488,22 +690,19 @@ export default function Buybox() {
     const noBuyboxSkus = uniqueAsins.filter((asin) => !(asinToOwner.get(asin) || '').includes('amazon.ae')).length;
     const overallBuyboxPct = Math.round((amazonAeCount / totalAsins) * 100);
     return { overallBuyboxPct, noBuyboxSkus, amazonAeCount };
-  }, [filteredPreviousDayRows]);
+  }, [aggregatedPreviousDayRows]);
 
-  /** One row per ASIN for modal tables (first occurrence in filtered rows). */
+  /** One row per ASIN for modal tables (matches aggregated table). */
   const asinListForModal = useMemo(() => {
-    const byAsin = new Map();
-    filteredRows.forEach((r) => {
-      if (r.asin && !byAsin.has(r.asin)) byAsin.set(r.asin, r);
-    });
     const withBuybox = [];
     const noBuybox = [];
-    byAsin.forEach((row) => {
+    aggregatedFilteredRows.forEach((row) => {
+      if (!row.asin) return;
       if (isAmazonAeOwner(row.currentBuyboxOwner)) withBuybox.push(row);
       else noBuybox.push(row);
     });
     return { withBuybox, noBuybox };
-  }, [filteredRows]);
+  }, [aggregatedFilteredRows]);
 
   const toggleColumn = (id) => {
     setVisibleColumns((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -769,6 +968,34 @@ export default function Buybox() {
     });
     setStockFilter('ALL_SKUS');
     setSelectedDate(maxSelectableDateStr);
+  };
+
+  const handleCategoryChange = (e) => {
+    const value = e.target.value;
+    setFilters((prev) => ({
+      ...prev,
+      category: value,
+      productName: '',
+      asin: '',
+      packSize: '',
+    }));
+    setPage(1);
+  };
+
+  const handleProductNameChange = (e) => {
+    const value = e.target.value;
+    setFilters((prev) => ({
+      ...prev,
+      productName: value,
+      asin: '',
+      packSize: '',
+    }));
+    setPage(1);
+  };
+
+  const handleAsinChange = (e) => {
+    setFilters((prev) => ({ ...prev, asin: e.target.value }));
+    setPage(1);
   };
 
   const hasFiltersToClear =
@@ -1052,13 +1279,13 @@ export default function Buybox() {
       return String(av).localeCompare(String(bv), undefined, { sensitivity: 'base', numeric: true });
     };
 
-    const base = [...filteredRows];
+    const base = [...aggregatedFilteredRows];
     base.sort((a, b) => {
       const c = compare(a, b);
       return dir === 'desc' ? -c : c;
     });
     return base;
-  }, [filteredRows, last30SalesByAsinMap, sort]);
+  }, [aggregatedFilteredRows, last30SalesByAsinMap, sort]);
 
   if (loading) return <div className="section-muted">Loading...</div>;
   if (error) return <div className="auth-error">{error}</div>;
@@ -1165,17 +1392,35 @@ export default function Buybox() {
           <div className="filter-group">
             <input
               type="text"
-              placeholder="Search (ASIN, name, category…)"
+              placeholder="Search (ASIN, name, category, channel…)"
               value={filters.search}
               onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
+              aria-label="Search"
             />
           </div>
           <div className="filter-group">
-            <select
-              value={filters.asin}
-              onChange={(e) => setFilters((f) => ({ ...f, asin: e.target.value }))}
-            >
-              <option value="">ASIN</option>
+            <select value={filters.category} onChange={handleCategoryChange} aria-label="Product Category">
+              <option value="">{filters.category ? 'Select All' : 'Product Category'}</option>
+              {categoryOptions.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="filter-group">
+            <select value={filters.productName} onChange={handleProductNameChange} aria-label="Product Name">
+              <option value="">{filters.productName ? 'Select All' : 'Product Name'}</option>
+              {productNameOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="filter-group">
+            <select value={filters.asin} onChange={handleAsinChange} aria-label="ASIN">
+              <option value="">{filters.asin ? 'Select All' : 'ASIN'}</option>
               {asinOptions.map((asin) => (
                 <option key={asin} value={asin}>
                   {asin}
@@ -1185,36 +1430,11 @@ export default function Buybox() {
           </div>
           <div className="filter-group">
             <select
-              value={filters.productName}
-              onChange={(e) => setFilters((f) => ({ ...f, productName: e.target.value }))}
-            >
-              <option value="">Product Name</option>
-              {productNameOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="filter-group">
-            <select
-              value={filters.category}
-              onChange={(e) => setFilters((f) => ({ ...f, category: e.target.value }))}
-            >
-              <option value="">Product Category</option>
-              {categoryOptions.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="filter-group">
-            <select
               value={filters.packSize}
               onChange={(e) => setFilters((f) => ({ ...f, packSize: e.target.value }))}
+              aria-label="Pack Size"
             >
-              <option value="">Pack Size</option>
+              <option value="">{filters.packSize ? 'Select All' : 'Pack Size'}</option>
               {packSizeOptions.map((p) => (
                 <option key={p} value={p}>
                   {p}

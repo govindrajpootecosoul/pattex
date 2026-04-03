@@ -11,6 +11,133 @@ function csvEscape(field) {
   return s;
 }
 
+function getRowProductCategory(row) {
+  if (!row) return '';
+  return (
+    row.productCategory ??
+    row.product_category ??
+    row['Product Category'] ??
+    row['Product Sub Category'] ??
+    row.productSubCategory ??
+    ''
+  );
+}
+
+function mktRowNum(row, keys) {
+  if (!row) return 0;
+  const list = Array.isArray(keys) ? keys : [keys];
+  for (const k of list) {
+    if (row[k] == null || row[k] === '') continue;
+    const n = Number(String(row[k]).replace(/,/g, '').trim());
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+/** One row per ASIN: sum funnel metrics, average DOS; recompute CTR/CPC/CVR/ACoS/TACoS and organic fields. */
+function mergeMarketingSkuRowsByAsin(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const noAsin = [];
+  const byAsin = new Map();
+  for (const row of rows) {
+    const asin = String(row?.asin ?? '').trim();
+    if (!asin) {
+      noAsin.push(row);
+      continue;
+    }
+    if (!byAsin.has(asin)) byAsin.set(asin, []);
+    byAsin.get(asin).push(row);
+  }
+  const merged = [];
+  for (const [asin, group] of byAsin) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+    const base = { ...group[0] };
+    const n = group.length;
+    let impressions = 0;
+    let clicks = 0;
+    let adSpend = 0;
+    let adUnitSold = 0;
+    let adSales = 0;
+    let overallUnitSold = 0;
+    let overallRevenue = 0;
+    let last30Sales = 0;
+    let availableInventory = 0;
+    let dosSum = 0;
+    let ntbUnitSold = 0;
+    let ntbRevenue = 0;
+    let bestDateStr = '';
+    for (const r of group) {
+      impressions += mktRowNum(r, ['Impressions', 'impressions']);
+      clicks += mktRowNum(r, ['Clicks', 'clicks']);
+      adSpend += mktRowNum(r, ['Ad Spend', 'adSpend', 'ads_spend']);
+      adUnitSold += mktRowNum(r, ['Ad Unit Sold', 'adUnitSold', 'ads_unit_sold']);
+      adSales += mktRowNum(r, ['Ad Sales', 'adSales', 'ads_sales']);
+      overallUnitSold += mktRowNum(r, ['Overall Unit Sold', 'overallUnitSold', 'total_units']);
+      overallRevenue += mktRowNum(r, ['Overall Revenue', 'overallRevenue', 'total_sales']);
+      {
+        const l30 = mktRowNum(r, ['Last 30 Days Sales', 'last30Sales']);
+        last30Sales += l30 || mktRowNum(r, ['Overall Revenue', 'overallRevenue', 'total_sales']);
+      }
+      availableInventory += mktRowNum(r, ['Available Inventory', 'availableInventory', 'available_inventory']);
+      dosSum += mktRowNum(r, ['DOS', 'dos']);
+      ntbUnitSold += mktRowNum(r, ['NTB Unit Sold', 'ntbUnitSold']);
+      ntbRevenue += mktRowNum(r, ['NTB Revenue', 'ntbRevenue']);
+      const rawD = r?.Date ?? r?.date;
+      if (rawD) {
+        const ds = String(rawD).slice(0, 10);
+        if (ds && (!bestDateStr || ds > bestDateStr)) bestDateStr = ds;
+      }
+    }
+    const dateDisplay = bestDateStr || (base.Date ? String(base.Date).slice(0, 10) : '') || '—';
+    const dos = n > 0 ? Math.round(dosSum / n) : 0;
+    const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+    const cpc = clicks > 0 ? adSpend / clicks : 0;
+    const cvr = clicks > 0 ? (overallUnitSold / clicks) * 100 : 0;
+    const acos = adSales > 0 ? (adSpend / adSales) * 100 : 0;
+    const tacos = overallRevenue > 0 ? (adSpend / overallRevenue) * 100 : 0;
+    const organicUnitSold = Math.max(0, overallUnitSold - adUnitSold);
+    const organicRevenue = Math.max(0, overallRevenue - adSales);
+
+    Object.assign(base, {
+      id: `merged-${asin}`,
+      asin,
+      availableInventory,
+      last30Sales: Math.round(last30Sales * 100) / 100,
+      dos,
+      impressions,
+      clicks,
+      overallRevenue,
+      overallUnitSold,
+      date: dateDisplay,
+      Date: dateDisplay,
+      'Available Inventory': availableInventory,
+      'Last 30 Days Sales': Math.round(last30Sales * 100) / 100,
+      DOS: dos,
+      Impressions: impressions,
+      Clicks: clicks,
+      CTR: Math.round(ctr * 100) / 100,
+      CPC: Math.round(cpc * 100) / 100,
+      CVR: Math.round(cvr * 100) / 100,
+      'Ad Spend': Math.round(adSpend * 100) / 100,
+      'Ad Unit Sold': adUnitSold,
+      'Ad Sales': Math.round(adSales * 100) / 100,
+      ACoS: Math.round(acos * 100) / 100,
+      'Overall Unit Sold': overallUnitSold,
+      'Overall Revenue': Math.round(overallRevenue * 100) / 100,
+      TACoS: Math.round(tacos * 100) / 100,
+      'Organic Unit Sold': organicUnitSold,
+      'Organic Revenue': Math.round(organicRevenue * 100) / 100,
+      'NTB Unit Sold': ntbUnitSold,
+      'NTB Revenue': Math.round(ntbRevenue * 100) / 100,
+    });
+    merged.push(base);
+  }
+  return [...merged, ...noAsin];
+}
+
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
   { id: 'CURRENT_MONTH', label: 'Current Month' },
@@ -541,6 +668,34 @@ export default function Marketing() {
     setDateFilterType('CURRENT_MONTH');
   };
 
+  const handleProductCategoryChange = (e) => {
+    const value = e.target.value;
+    setFilters((prev) => ({
+      ...prev,
+      productCategory: value,
+      productName: '',
+      asin: '',
+      packSize: '',
+    }));
+    setSkuPage(1);
+  };
+
+  const handleProductNameChange = (e) => {
+    const value = e.target.value;
+    setFilters((prev) => ({
+      ...prev,
+      productName: value,
+      asin: '',
+      packSize: '',
+    }));
+    setSkuPage(1);
+  };
+
+  const handleAsinFilterChange = (e) => {
+    setFilters((prev) => ({ ...prev, asin: e.target.value }));
+    setSkuPage(1);
+  };
+
   const kpiTrends = (() => {
     const fallback = { value: '—', type: 'neutral' };
     const fmt = (pct) => {
@@ -818,43 +973,65 @@ export default function Marketing() {
   }, [funnelTotals]);
   const skuRows = (data && !data.comingSoon && Array.isArray(data.skuRows) ? data.skuRows : []);
 
-  // Options for top Marketing filters.
-  // Prefer backend-provided distinct lists when available (stays populated even if current period has 0 rows),
-  // else derive from `skuRows`.
+  const mergedSkuRows = useMemo(() => mergeMarketingSkuRowsByAsin(skuRows), [skuRows]);
+
+  // Options for top Marketing filters (cascading like Revenue/Inventory; API lists as fallback when table is empty).
   const distinctFromData = (key) =>
     Array.isArray(data?.filterOptions?.[key]) ? data.filterOptions[key].filter(Boolean) : [];
 
-  const asinOptions = useMemo(() => {
-    const fromApi = distinctFromData('asins');
-    if (fromApi.length) return fromApi;
-    return Array.from(new Set(skuRows.map((r) => r.asin).filter(Boolean)));
-  }, [data?.filterOptions, skuRows]);
+  const rowsForProductNames = useMemo(
+    () =>
+      filters.productCategory
+        ? mergedSkuRows.filter((r) => getRowProductCategory(r) === filters.productCategory)
+        : mergedSkuRows,
+    [mergedSkuRows, filters.productCategory],
+  );
 
-  const productNameOptions = useMemo(() => {
-    const fromApi = distinctFromData('productNames');
-    if (fromApi.length) return fromApi;
-    return Array.from(new Set(skuRows.map((r) => r.productName).filter(Boolean)));
-  }, [data?.filterOptions, skuRows]);
+  const rowsForAsins = useMemo(
+    () =>
+      filters.productName
+        ? rowsForProductNames.filter((r) => r.productName === filters.productName)
+        : rowsForProductNames,
+    [rowsForProductNames, filters.productName],
+  );
 
   const productCategoryOptions = useMemo(() => {
     const fromApi = distinctFromData('productCategories');
     if (fromApi.length) return fromApi;
-    return Array.from(new Set(skuRows.map((r) => r.productCategory).filter(Boolean)));
-  }, [data?.filterOptions, skuRows]);
+    return Array.from(new Set(mergedSkuRows.map(getRowProductCategory).filter(Boolean)));
+  }, [data?.filterOptions, mergedSkuRows]);
+
+  const productNameOptions = useMemo(() => {
+    const fromRows = Array.from(new Set(rowsForProductNames.map((r) => r.productName).filter(Boolean)));
+    if (fromRows.length) return fromRows;
+    const fromApi = distinctFromData('productNames');
+    return fromApi.length ? fromApi : [];
+  }, [rowsForProductNames, data?.filterOptions]);
+
+  const asinOptions = useMemo(() => {
+    const narrowed = Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean)));
+    if (narrowed.length) return narrowed;
+    const fromApi = distinctFromData('asins');
+    if (fromApi.length) return fromApi;
+    return Array.from(new Set(mergedSkuRows.map((r) => r.asin).filter(Boolean)));
+  }, [data?.filterOptions, rowsForAsins, mergedSkuRows]);
 
   const packSizeOptions = useMemo(() => {
+    const fromRows = Array.from(new Set(rowsForProductNames.map((r) => r.packSize).filter(Boolean))).sort((a, b) =>
+      String(a).localeCompare(String(b)),
+    );
+    if (fromRows.length) return fromRows;
     const fromApi = distinctFromData('packSizes');
-    if (fromApi.length) return fromApi;
-    return Array.from(new Set(skuRows.map((r) => r.packSize).filter(Boolean)));
-  }, [data?.filterOptions, skuRows]);
-  // Use API-provided list (all unique Sales Channels in DB) when available; else derive from skuRows
+    return fromApi.length ? fromApi : [];
+  }, [rowsForProductNames, data?.filterOptions]);
+  // Use API-provided list (all unique Sales Channels in DB) when available; else derive from merged SKU rows
   const salesChannelOptions = useMemo(() => {
     if (allSalesChannels.length > 0) return allSalesChannels;
     if (data?.salesChannelOptions?.length > 0) return data.salesChannelOptions;
-    return Array.from(new Set(skuRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) =>
+    return Array.from(new Set(mergedSkuRows.map((r) => r.salesChannel || r.channel).filter(Boolean))).sort((a, b) =>
       String(a).localeCompare(String(b)),
     );
-  }, [allSalesChannels, data?.salesChannelOptions, skuRows]);
+  }, [allSalesChannels, data?.salesChannelOptions, mergedSkuRows]);
 
   // Ensure the selected sales channel matches an available option on first render/load.
   useEffect(() => {
@@ -878,7 +1055,7 @@ export default function Marketing() {
   }, [salesChannelOptions]);
 
   const displayedSkuRows = useMemo(() => {
-    let base = [...skuRows];
+    let base = [...mergedSkuRows];
 
     if (skuGroupFilter === 'BEST_REVENUE') {
       base.sort((a, b) => (Number(b.overallRevenue) || 0) - (Number(a.overallRevenue) || 0));
@@ -890,7 +1067,7 @@ export default function Marketing() {
     }
 
     return base;
-  }, [skuRows, skuGroupFilter]);
+  }, [mergedSkuRows, skuGroupFilter]);
 
   const sortedSkuRows = useMemo(() => {
     const dir = skuSort?.dir === 'desc' ? 'desc' : 'asc';
@@ -1592,14 +1769,14 @@ export default function Marketing() {
         <div className="filter-row filter-row-one">
           <div className="filter-group">
             <select
-              value={filters.asin}
-              onChange={(e) => setFilters((f) => ({ ...f, asin: e.target.value }))}
-              aria-label="ASIN"
+              value={filters.productCategory}
+              onChange={handleProductCategoryChange}
+              aria-label="Product Category"
             >
-              <option value="">ASIN</option>
-              {asinOptions.map((asin) => (
-                <option key={asin} value={asin}>
-                  {asin}
+              <option value="">{filters.productCategory ? 'Select All' : 'Product Category'}</option>
+              {productCategoryOptions.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
                 </option>
               ))}
             </select>
@@ -1607,10 +1784,10 @@ export default function Marketing() {
           <div className="filter-group">
             <select
               value={filters.productName}
-              onChange={(e) => setFilters((f) => ({ ...f, productName: e.target.value }))}
+              onChange={handleProductNameChange}
               aria-label="Product Name"
             >
-              <option value="">Product Name</option>
+              <option value="">{filters.productName ? 'Select All' : 'Product Name'}</option>
               {productNameOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -1619,15 +1796,11 @@ export default function Marketing() {
             </select>
           </div>
           <div className="filter-group">
-            <select
-              value={filters.productCategory}
-              onChange={(e) => setFilters((f) => ({ ...f, productCategory: e.target.value }))}
-              aria-label="Product Category"
-            >
-              <option value="">Product Category</option>
-              {productCategoryOptions.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
+            <select value={filters.asin} onChange={handleAsinFilterChange} aria-label="ASIN">
+              <option value="">{filters.asin ? 'Select All' : 'ASIN'}</option>
+              {asinOptions.map((asin) => (
+                <option key={asin} value={asin}>
+                  {asin}
                 </option>
               ))}
             </select>
@@ -1638,7 +1811,7 @@ export default function Marketing() {
               onChange={(e) => setFilters((f) => ({ ...f, packSize: e.target.value }))}
               aria-label="Pack Size"
             >
-              <option value="">Pack Size</option>
+              <option value="">{filters.packSize ? 'Select All' : 'Pack Size'}</option>
               {packSizeOptions.map((p) => (
                 <option key={p} value={p}>
                   {p}

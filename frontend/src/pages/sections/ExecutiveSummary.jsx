@@ -377,6 +377,11 @@ export default function ExecutiveSummary() {
     return `AED ${Math.round(n).toLocaleString()}`;
   };
 
+  const formatKpiAed2 = (value) => {
+    const n = Number(value) || 0;
+    return `AED ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
   const truncateText = (value, maxChars) => {
     const s = value == null ? '' : String(value);
     if (!maxChars || maxChars <= 0) return s;
@@ -497,15 +502,15 @@ export default function ExecutiveSummary() {
     return [
       {
         metric: 'Overall Revenue',
-        target: Math.round(Number(t.overallRevenue) || 0),
-        actualMTD: Math.round(Number(a.overallRevenue) || 0),
+        target: Number(t.overallRevenue) || 0,
+        actualMTD: Number(a.overallRevenue) || 0,
         actualExpected: null,
         variation: typeof v.overallRevenuePct === 'number' ? v.overallRevenuePct : null,
       },
       {
         metric: 'Overall Spend',
-        target: Math.round(Number(t.overallSpend) || 0),
-        actualMTD: Math.round(Number(a.overallSpend) || 0),
+        target: Number(t.overallSpend) || 0,
+        actualMTD: Number(a.overallSpend) || 0,
         actualExpected: null,
         variation: typeof v.overallSpendPct === 'number' ? v.overallSpendPct : null,
       },
@@ -658,8 +663,8 @@ export default function ExecutiveSummary() {
                       return (
                         <tr key={row.metric || i}>
                           <td>{row.metric}</td>
-                          <td className="col-num">{row.target?.toLocaleString()}</td>
-                          <td className="col-num">{row.actualMTD?.toLocaleString()}</td>
+                          <td className="col-num">{formatKpiAed2(row.target)}</td>
+                          <td className="col-num">{formatKpiAed2(row.actualMTD)}</td>
                           <td className="col-num">
                             {row.actualExpected != null
                               ? row.actualExpected.toLocaleString()

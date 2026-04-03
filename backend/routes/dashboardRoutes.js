@@ -1104,7 +1104,9 @@ router.get('/executive-summary', async (req, res) => {
 //   (including latest-date anchor + T-3 for months, Mongo date clauses for day/week, JS channel fallback)
 router.get('/key-performance-metrics', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'key-performance-metrics:v2');
+    // Bump cache key because this endpoint has fixed executive KPI semantics
+    // and must not serve stale payloads from previous month-anchoring logic.
+    const cacheKey = buildDashboardCacheKey(req, 'key-performance-metrics:v2:exec-fixed-currentmonth');
     const ttlSeconds = 300; // 5 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -1113,16 +1115,20 @@ router.get('/key-performance-metrics', async (req, res) => {
       return res.json(cached);
     }
 
-    const salesChannel = String(req.query.salesChannel || '').trim();
-    const dateFilterTypeQ = String(req.query.dateFilterType || '').trim();
-    const customRangeStartQ = String(req.query.customRangeStart || '').trim();
-    const customRangeEndQ = String(req.query.customRangeEnd || '').trim();
+    // Executive KPI table requirements:
+    // - Targets are fixed static values (not derived from DB targets per period/channel).
+    // - Actuals are fixed to "current month" totals across ALL sales channels.
+    // - UI filters (salesChannel/dateFilterType) must NOT change these KPI values.
+    const salesChannel = '';
+    const dateFilterTypeQ = 'CURRENT_MONTH';
+    const customRangeStartQ = '';
+    const customRangeEndQ = '';
 
     const docFilter = buildSalesChannelOrFilter(salesChannel) || {};
 
     let anchorDateForDays = null; // used for day/week filters
     let anchorDateForMonths = null; // used for month filters (keeps T-3 style anchoring)
-    if (salesChannel && dateFilterTypeQ && dateFilterTypeQ !== 'CUSTOM_RANGE') {
+    if (dateFilterTypeQ && dateFilterTypeQ !== 'CUSTOM_RANGE') {
       const dateDocs = await req.companyModels.Revenue.find(docFilter, { Date: 1, date: 1, DATE: 1 }).lean();
       let best = '';
       dateDocs.forEach((d) => {
@@ -1138,10 +1144,10 @@ router.get('/key-performance-metrics', async (req, res) => {
         const d = yy && mo && dd ? new Date(yy, mo - 1, dd) : null;
         if (d && !Number.isNaN(d.getTime())) {
           anchorDateForDays = d;
-          const dm = new Date(d);
-          // Align with the T-3 window used elsewhere for month filters.
-          dm.setDate(dm.getDate() - 3);
-          anchorDateForMonths = dm;
+          // For KPI "Current Month", do NOT apply a T-3 shift.
+          // A shift can cross the month boundary in early-month data (e.g. Apr-02 -> Mar-30),
+          // which incorrectly makes "Current Month" compute as the previous month.
+          anchorDateForMonths = new Date(d);
         }
       }
     }
@@ -1168,16 +1174,22 @@ router.get('/key-performance-metrics', async (req, res) => {
             const ymShort = monthShortFromYearMonth(ym);
             const yearYY = String(year4).slice(-2);
             const isoMonthPrefix = `${ym}-`;
-            monthOr.push({ Date: { $regex: `^\\s*${isoMonthPrefix}` } });
+            ['Date', 'date', 'DATE'].forEach((field) => {
+              monthOr.push({ [field]: { $regex: `^\\s*${isoMonthPrefix}` } });
+            });
             if (ymShort) {
-              monthOr.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort}-${year4}`, 'i') } });
-              monthOr.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort}-${yearYY}`, 'i') } });
+              ['Date', 'date', 'DATE'].forEach((field) => {
+                monthOr.push({ [field]: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort}-${year4}`, 'i') } });
+                monthOr.push({ [field]: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort}-${yearYY}`, 'i') } });
+              });
             }
             const start = new Date(`${ym}-01T00:00:00.000Z`);
             if (!Number.isNaN(start.getTime())) {
               const end = new Date(start);
               end.setUTCMonth(end.getUTCMonth() + 1);
-              monthOr.push({ Date: { $gte: start, $lt: end } });
+              ['Date', 'date', 'DATE'].forEach((field) => {
+                monthOr.push({ [field]: { $gte: start, $lt: end } });
+              });
             }
           });
           monthOr.push({
@@ -1196,16 +1208,24 @@ router.get('/key-performance-metrics', async (req, res) => {
       const ymShort0 = monthShortFromYearMonth(ym0);
       const yearYY0 = String(year0).slice(-2);
       const isoMonthPrefix0 = `${ym0}-`;
-      const monthOr0 = [{ Date: { $regex: `^\\s*${isoMonthPrefix0}` } }];
+      const monthOr0 = [
+        { Date: { $regex: `^\\s*${isoMonthPrefix0}` } },
+        { date: { $regex: `^\\s*${isoMonthPrefix0}` } },
+        { DATE: { $regex: `^\\s*${isoMonthPrefix0}` } },
+      ];
       if (ymShort0) {
-        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${year0}`, 'i') } });
-        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${yearYY0}`, 'i') } });
+        ['Date', 'date', 'DATE'].forEach((field) => {
+          monthOr0.push({ [field]: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${year0}`, 'i') } });
+          monthOr0.push({ [field]: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${yearYY0}`, 'i') } });
+        });
       }
       const start0 = new Date(`${ym0}-01T00:00:00.000Z`);
       if (!Number.isNaN(start0.getTime())) {
         const end0 = new Date(start0);
         end0.setUTCMonth(end0.getUTCMonth() + 1);
-        monthOr0.push({ Date: { $gte: start0, $lt: end0 } });
+        ['Date', 'date', 'DATE'].forEach((field) => {
+          monthOr0.push({ [field]: { $gte: start0, $lt: end0 } });
+        });
       }
       monthOr0.push({
         $and: [
@@ -1221,16 +1241,24 @@ router.get('/key-performance-metrics', async (req, res) => {
       const ymShort0 = monthShortFromYearMonth(ym0);
       const yearYY0 = String(year0).slice(-2);
       const isoMonthPrefix0 = `${ym0}-`;
-      const monthOr0 = [{ Date: { $regex: `^\\s*${isoMonthPrefix0}` } }];
+      const monthOr0 = [
+        { Date: { $regex: `^\\s*${isoMonthPrefix0}` } },
+        { date: { $regex: `^\\s*${isoMonthPrefix0}` } },
+        { DATE: { $regex: `^\\s*${isoMonthPrefix0}` } },
+      ];
       if (ymShort0) {
-        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${year0}`, 'i') } });
-        monthOr0.push({ Date: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${yearYY0}`, 'i') } });
+        ['Date', 'date', 'DATE'].forEach((field) => {
+          monthOr0.push({ [field]: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${year0}`, 'i') } });
+          monthOr0.push({ [field]: { $regex: new RegExp(`^\\s*\\d{1,2}-${ymShort0}-${yearYY0}`, 'i') } });
+        });
       }
       const start0 = new Date(`${ym0}-01T00:00:00.000Z`);
       if (!Number.isNaN(start0.getTime())) {
         const end0 = new Date(start0);
         end0.setUTCMonth(end0.getUTCMonth() + 1);
-        monthOr0.push({ Date: { $gte: start0, $lt: end0 } });
+        ['Date', 'date', 'DATE'].forEach((field) => {
+          monthOr0.push({ [field]: { $gte: start0, $lt: end0 } });
+        });
       }
       monthOr0.push({
         $and: [
@@ -1297,17 +1325,9 @@ router.get('/key-performance-metrics', async (req, res) => {
       };
     });
 
-    const targetFilter = {
-      $and: [monthClauses.length === 1 ? monthClauses[0] : { $or: monthClauses }],
-    };
-    if (salesChannel) {
-      const scOr = buildSalesChannelOrFilter(salesChannel);
-      if (scOr) targetFilter.$and.push(scOr);
-    }
-
-    const targetDocs = await req.companyModels.Target.find(targetFilter).lean();
-    const targetOverallRevenue = targetDocs.reduce((s, d) => s + parseNum(d?.['Overall Sales'] ?? d?.overallSales ?? d?.overall_sales), 0);
-    const targetOverallSpend = targetDocs.reduce((s, d) => s + parseNum(d?.['Ad Spend'] ?? d?.adSpend ?? d?.ad_spend), 0);
+    // Fixed KPI target values (AED)
+    const targetOverallRevenue = 83755.05;
+    const targetOverallSpend = 20101.21;
 
     const currentPeriodSet = new Set(
       dayWeekPeriods ? dayWeekPeriods.current : monthPeriods?.current || [targetYm],

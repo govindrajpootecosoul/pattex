@@ -201,6 +201,81 @@ function truncateText(value, maxChars) {
   return `${s.slice(0, maxChars)}...`;
 }
 
+/**
+ * One row per ASIN: sum units/revenues/spend; average AOV and TACOS % across merged rows.
+ * Rows without an ASIN are kept as-is (not merged with each other).
+ */
+function mergeRevenueRowsByAsin(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const withoutAsin = [];
+  const byAsin = new Map();
+  for (const row of rows) {
+    const asin = String(row?.asin ?? '').trim();
+    if (!asin) {
+      withoutAsin.push(row);
+      continue;
+    }
+    if (!byAsin.has(asin)) byAsin.set(asin, []);
+    byAsin.get(asin).push(row);
+  }
+  const merged = [];
+  for (const [asin, group] of byAsin) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+    const base = { ...group[0] };
+    let overallUnit = 0;
+    let overallRevenue = 0;
+    let adUnit = 0;
+    let adRevenue = 0;
+    let organicUnit = 0;
+    let organicRevenue = 0;
+    let adSpend = 0;
+    let newToBrandUnit = 0;
+    let repeatUnit = 0;
+    let promotionalUnit = 0;
+    let aovSum = 0;
+    let tacosSum = 0;
+    let promoLineContribution = 0;
+    const n = group.length;
+    for (const r of group) {
+      overallUnit += Number(r.overallUnit) || 0;
+      overallRevenue += Number(r.overallRevenue) || 0;
+      adUnit += Number(r.adUnit) || 0;
+      adRevenue += Number(r.adRevenue) || 0;
+      organicUnit += Number(r.organicUnit) || 0;
+      organicRevenue += Number(r.organicRevenue) || 0;
+      adSpend += Number(r.adSpend) || 0;
+      newToBrandUnit += Number(r.newToBrandUnit) || 0;
+      repeatUnit += Number(r.repeatUnit) || 0;
+      promotionalUnit += Number(r.promotionalUnit) || 0;
+      aovSum += Number(r.aov) || 0;
+      tacosSum += Number(r.tacos) || 0;
+      promoLineContribution += (Number(r.promotionalUnit) || 0) * (Number(r.aov) || 0);
+    }
+    merged.push({
+      ...base,
+      id: `merged-${asin}`,
+      asin,
+      overallUnit,
+      overallRevenue,
+      adUnit,
+      adRevenue,
+      organicUnit,
+      organicRevenue,
+      adSpend,
+      newToBrandUnit,
+      repeatUnit,
+      promotionalUnit,
+      aov: n > 0 ? aovSum / n : 0,
+      tacos: n > 0 ? tacosSum / n : 0,
+      promoLineContribution,
+    });
+  }
+  return [...merged, ...withoutAsin];
+}
+
 function csvEscape(field) {
   const s = field == null ? '' : String(field);
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -463,9 +538,14 @@ export default function Revenue() {
 
   const filteredRows = revenueRows.filter(applyFilters);
 
+  const aggregatedFilteredRows = useMemo(
+    () => mergeRevenueRowsByAsin(filteredRows),
+    [filteredRows],
+  );
+
   const tableRows = useMemo(() => {
-    if (detailedView === 'all') return filteredRows;
-    let base = [...filteredRows];
+    if (detailedView === 'all') return aggregatedFilteredRows;
+    let base = [...aggregatedFilteredRows];
     if (detailedView === 'best_units') {
       base.sort((a, b) => (b.overallUnit ?? 0) - (a.overallUnit ?? 0));
       return base.slice(0, 10);
@@ -486,8 +566,8 @@ export default function Revenue() {
       base.sort((a, b) => (a.overallRevenue ?? 0) - (b.overallRevenue ?? 0));
       return base.slice(0, 10);
     }
-    return filteredRows;
-  }, [filteredRows, detailedView]);
+    return aggregatedFilteredRows;
+  }, [aggregatedFilteredRows, detailedView]);
 
   const sortedRows = useMemo(() => {
     const dir = sort?.dir === 'desc' ? 'desc' : 'asc';
@@ -580,7 +660,7 @@ export default function Revenue() {
   const pagedRows = sortedRows.slice(startIndex, endIndex);
 
   const summary = useMemo(() => {
-    if (!filteredRows.length) {
+    if (!aggregatedFilteredRows.length) {
       return {
         overallUnit: 0,
         overallRevenue: 0,
@@ -595,7 +675,7 @@ export default function Revenue() {
         adsSpend: 0,
       };
     }
-    const totals = filteredRows.reduce(
+    const totals = aggregatedFilteredRows.reduce(
       (acc, r) => {
         acc.overallUnit += Number(r.overallUnit) || 0;
         acc.overallRevenue += Number(r.overallRevenue) || 0;
@@ -604,7 +684,9 @@ export default function Revenue() {
         acc.organicUnit += Number(r.organicUnit) || 0;
         acc.organicRevenue += Number(r.organicRevenue) || 0;
         acc.newToBrandUnit += Number(r.newToBrandUnit) || 0;
-        acc.promoRevenue += (Number(r.promotionalUnit) || 0) * (Number(r.aov) || 0);
+        acc.promoRevenue += Object.prototype.hasOwnProperty.call(r, 'promoLineContribution')
+          ? Number(r.promoLineContribution) || 0
+          : (Number(r.promotionalUnit) || 0) * (Number(r.aov) || 0);
         acc.aov += Number(r.aov) || 0;
         // Ads spend: sum actual adSpend from each row (respects date + all filters)
         acc.adsSpend += Number(r.adSpend) || 0;
@@ -623,7 +705,7 @@ export default function Revenue() {
         adsSpend: 0,
       },
     );
-    const count = filteredRows.length;
+    const count = aggregatedFilteredRows.length;
     // TACOS = (Total Ad Spend / Total Sales) * 100 — from summed ads spend and revenue
     const tacos = totals.overallRevenue > 0 ? (totals.adsSpend / totals.overallRevenue) * 100 : 0;
     return {
@@ -631,7 +713,7 @@ export default function Revenue() {
       aov: totals.aov / count,
       tacos,
     };
-  }, [filteredRows]);
+  }, [aggregatedFilteredRows]);
 
   /** Comparison that respects date period + all filters (current vs previous period). */
   const localComparison = useMemo(() => {
@@ -643,11 +725,15 @@ export default function Revenue() {
     const comparisonSet = new Set(periods.comparison);
     const isDayWeek = periodType === 'DAY' || periodType === 'WEEK';
     const key = isDayWeek ? 'reportDate' : 'reportMonth';
-    const currentRows = revenueRows.filter(
-      (r) => applyNonDateFilters(r) && r[key] && currentSet.has(r[key]),
+    const currentRows = mergeRevenueRowsByAsin(
+      revenueRows.filter(
+        (r) => applyNonDateFilters(r) && r[key] && currentSet.has(r[key]),
+      ),
     );
-    const comparisonRows = revenueRows.filter(
-      (r) => applyNonDateFilters(r) && r[key] && comparisonSet.has(r[key]),
+    const comparisonRows = mergeRevenueRowsByAsin(
+      revenueRows.filter(
+        (r) => applyNonDateFilters(r) && r[key] && comparisonSet.has(r[key]),
+      ),
     );
     const aggregate = (rows) => {
       let overallRevenue = 0;
@@ -1064,7 +1150,7 @@ export default function Revenue() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row) => {
+                {aggregatedFilteredRows.map((row) => {
                   const overallRevenue = Number(row.overallRevenue) || 0;
                   const adRevenue = Number(row.adRevenue) || 0;
                   const organicRevenue = Number(row.organicRevenue) || 0;
@@ -1169,20 +1255,10 @@ export default function Revenue() {
   const handleAsinChange = (e) => {
     const value = e.target.value;
     if (!value) {
-      // When ASIN is cleared manually, keep parent selections
       setFilters((prev) => ({ ...prev, asin: '', packSize: '' }));
       return;
     }
-
-    // Reverse auto-population: infer product + category from ASIN
-    const match = revenueRows.find((r) => r.asin === value);
-    setFilters((prev) => ({
-      ...prev,
-      asin: value,
-      productName: match?.productName || prev.productName,
-      category: getRowProductCategory(match) || prev.category,
-      packSize: getRowPackSize(match) || prev.packSize,
-    }));
+    setFilters((prev) => ({ ...prev, asin: value }));
   };
 
   const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
@@ -1312,13 +1388,13 @@ export default function Revenue() {
           </div>
           <div className="filter-group">
             <select
-              value={filters.asin}
-              onChange={handleAsinChange}
+              value={filters.category}
+              onChange={handleCategoryChange}
             >
-              <option value="">{filters.asin ? 'Select All' : 'ASIN'}</option>
-              {asinOptions.map((asin) => (
-                <option key={asin} value={asin}>
-                  {asin}
+              <option value="">{filters.category ? 'Select All' : 'Product Category'}</option>
+              {categoryOptions.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
                 </option>
               ))}
             </select>
@@ -1338,13 +1414,14 @@ export default function Revenue() {
           </div>
           <div className="filter-group">
             <select
-              value={filters.category}
-              onChange={handleCategoryChange}
+              value={filters.asin}
+              onChange={handleAsinChange}
+              aria-label="ASIN"
             >
-              <option value="">{filters.category ? 'Select All' : 'Product Category'}</option>
-              {categoryOptions.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
+              <option value="">{filters.asin ? 'Select All' : 'ASIN'}</option>
+              {asinOptions.map((asin) => (
+                <option key={asin} value={asin}>
+                  {asin}
                 </option>
               ))}
             </select>
