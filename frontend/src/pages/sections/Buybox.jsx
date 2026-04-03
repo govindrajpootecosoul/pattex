@@ -31,8 +31,6 @@ const BUYBOX_COLUMN_OPTIONS = [
   { id: 'packSize', label: 'Pack Size' },
   { id: 'totalSales', label: 'Last 30 Days Sales' },
   { id: 'totalSale', label: 'Total Sale' },
-  { id: 'vcAvailableInventory', label: 'VC Available Inventory' },
-  { id: 'scAvailableInventory', label: 'SC Available Inventory' },
   { id: 'openPOs', label: 'Open POs' },
   { id: 'dos', label: 'DOS' },
   { id: 'scIdealPrice', label: 'SC Ideal Price' },
@@ -201,8 +199,6 @@ function mergeBuyboxRowsByAsin(rows) {
     const sTotalSales = sumPick(group, ['totalSales', 'total_sales']);
     const sTotalUnits = sumPick(group, ['totalUnits', 'total_units']);
     const sOpen = sumPick(group, ['Open POs', 'openPOs', 'openPos']);
-    const sVc = sumPick(group, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']);
-    const sSc = sumPick(group, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']);
     const sAged90Amt = sumPick(group, ['Aged 90+ Days Sellable Inventory', 'aged90PlusSellableInventory']);
     const sAged90Units = sumPick(group, ['Aged 90+ Days Sellable Units', 'aged90PlusSellableUnits']);
     const sSellable = sumPick(group, ['Sellable Inventory Amount', 'sellableInventoryAmount']);
@@ -284,10 +280,6 @@ function mergeBuyboxRowsByAsin(rows) {
       max_available_qty: maxQ,
       'No/Low Stock wt Open POs': lowOpen,
       'No/Low Stock wt no Open POs': lowNoOpen,
-      vcAvailableInventory: sVc,
-      scAvailableInventory: sSc,
-      'VC Available Inventory': sVc,
-      'SC Available Inventory': sSc,
     });
 
     for (let i = 1; i <= 10; i += 1) {
@@ -369,8 +361,6 @@ export default function Buybox() {
       oosDate: true,
       totalSales: true,
       totalSale: true,
-      vcAvailableInventory: true,
-      scAvailableInventory: true,
       totalUnits: true,
       sellThrough: true,
       dos: true,
@@ -758,8 +748,6 @@ export default function Buybox() {
       case 'packSize': return textOrZero(row.packSize);
       case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
       case 'totalSale': return formatAed(pick(row, ['totalSales', 'total_sales']));
-      case 'vcAvailableInventory': return textOrZero(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
-      case 'scAvailableInventory': return textOrZero(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
       case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
       case 'dos': return textOrZero(pick(row, ['DOS', 'dos']));
       case 'scIdealPrice': return textOrZero(pick(row, ['SC Ideal Price', 'scIdealPrice']));
@@ -829,8 +817,6 @@ export default function Buybox() {
       case 'packSize': return textOrZero(row.packSize);
       case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
       case 'totalSale': return formatAed(pick(row, ['totalSales', 'total_sales']));
-      case 'vcAvailableInventory': return textOrZero(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
-      case 'scAvailableInventory': return textOrZero(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
       case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
       case 'dos': return textOrZero(pick(row, ['DOS', 'dos']));
       case 'scIdealPrice': return textOrZero(pick(row, ['SC Ideal Price', 'scIdealPrice']));
@@ -1115,10 +1101,6 @@ export default function Buybox() {
           return Number(last30SalesByAsinMap.get(row?.asin) ?? 0);
         case 'totalSale':
           return parseNumLoose(pick(row, ['totalSales', 'total_sales']));
-        case 'vcAvailableInventory':
-          return parseNumLoose(pick(row, ['VC Available Inventory', 'vcAvailableInventory', 'vc_available_inventory']));
-        case 'scAvailableInventory':
-          return parseNumLoose(pick(row, ['SC Available Inventory', 'scAvailableInventory', 'sc_available_inventory']));
         case 'openPOs':
           return parseNumLoose(pick(row, ['Open POs', 'openPOs']));
         case 'dos':
@@ -1216,8 +1198,6 @@ export default function Buybox() {
       'packSize',
       'totalSales',
       'totalSale',
-      'vcAvailableInventory',
-      'scAvailableInventory',
       'openPOs',
       'dos',
       'scIdealPrice',

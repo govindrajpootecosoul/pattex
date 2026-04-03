@@ -66,8 +66,6 @@ function mergeMarketingSkuRowsByAsin(rows) {
     let last30Sales = 0;
     let availableInventory = 0;
     let dosSum = 0;
-    let ntbUnitSold = 0;
-    let ntbRevenue = 0;
     let bestDateStr = '';
     for (const r of group) {
       impressions += mktRowNum(r, ['Impressions', 'impressions']);
@@ -83,8 +81,6 @@ function mergeMarketingSkuRowsByAsin(rows) {
       }
       availableInventory += mktRowNum(r, ['Available Inventory', 'availableInventory', 'available_inventory']);
       dosSum += mktRowNum(r, ['DOS', 'dos']);
-      ntbUnitSold += mktRowNum(r, ['NTB Unit Sold', 'ntbUnitSold']);
-      ntbRevenue += mktRowNum(r, ['NTB Revenue', 'ntbRevenue']);
       const rawD = r?.Date ?? r?.date;
       if (rawD) {
         const ds = String(rawD).slice(0, 10);
@@ -130,8 +126,6 @@ function mergeMarketingSkuRowsByAsin(rows) {
       TACoS: Math.round(tacos * 100) / 100,
       'Organic Unit Sold': organicUnitSold,
       'Organic Revenue': Math.round(organicRevenue * 100) / 100,
-      'NTB Unit Sold': ntbUnitSold,
-      'NTB Revenue': Math.round(ntbRevenue * 100) / 100,
     });
     merged.push(base);
   }
@@ -166,8 +160,6 @@ const OTHER_COLUMNS = [
   'TACOS',
   'Organic Unit Sold',
   'Organic Revenue',
-  'NTB Unit Sold',
-  'NTB Revenue',
 ];
 
 const FUNNEL_METRICS = ['Impressions', 'Clicks', 'Sales'];
@@ -289,10 +281,58 @@ const PERFORMANCE_METRIC_OPTIONS = [
   { id: 'organicRevenue', label: 'Organic Revenue', color: '#2dd4bf', format: 'currency', axis: 'left' },
 ];
 
-function MarketingPerformanceTooltip({ active, payload, label }) {
+function formatMarketingChartTooltipValue(metricId, raw) {
+  const config = PERFORMANCE_METRIC_OPTIONS.find((o) => o.id === metricId);
+  const fmt = config?.format || 'integer';
+  if (raw == null || raw === '') return '—';
+  const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/,/g, '').trim());
+  if (!Number.isFinite(n)) return '—';
+  switch (fmt) {
+    case 'currency':
+      return `AED ${n.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+    case 'percent':
+      return `${n.toFixed(2)}%`;
+    default:
+      return n.toLocaleString();
+  }
+}
+
+/** Tooltip rows follow the metric cards above (same labels + colors); only series toggled on are listed. */
+function MarketingPerformanceTooltip({
+  active,
+  payload,
+  label,
+  selectedMetrics = [],
+  seriesVisible = [],
+}) {
   if (!active || !payload || payload.length === 0) return null;
 
   const point = payload[0].payload;
+  const ids = Array.isArray(selectedMetrics) ? selectedMetrics : [];
+  const vis = Array.isArray(seriesVisible) ? seriesVisible : [];
+
+  const rows = [];
+  ids.forEach((metricId, index) => {
+    if (!vis[index]) return;
+    const config = PERFORMANCE_METRIC_OPTIONS.find((o) => o.id === metricId) || {
+      id: metricId,
+      label: metricId,
+      color: '#64748b',
+      format: 'integer',
+    };
+    const raw = point?.[metricId];
+    rows.push({
+      key: `${metricId}-${index}`,
+      label: config.label,
+      color: config.color,
+      value: formatMarketingChartTooltipValue(metricId, raw),
+    });
+  });
+
+  if (!rows.length) return null;
 
   return (
     <div
@@ -307,47 +347,18 @@ function MarketingPerformanceTooltip({ active, payload, label }) {
     >
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: '#0f172a' }}>{label}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: '#7d38cc' }} />
-            Total cost
-          </span>
-          <span style={{ fontWeight: 600 }}>
-            {point.totalCost != null
-              ? `AED ${Number(point.totalCost).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}`
-              : '—'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: '#10b981' }} />
-            Purchases
-          </span>
-          <span style={{ fontWeight: 600 }}>
-            {point.purchases != null ? point.purchases.toLocaleString() : '—'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: '#d0137a' }} />
-            Clicks
-          </span>
-          <span style={{ fontWeight: 600 }}>
-            {point.clicks != null ? point.clicks.toLocaleString() : '—'}
-          </span>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: '#008296' }} />
-            Impressions
-          </span>
-          <span style={{ fontWeight: 600 }}>
-            {point.impressions != null ? point.impressions.toLocaleString() : '—'}
-          </span>
-        </div>
+        {rows.map((r) => (
+          <div
+            key={r.key}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color }} />
+              {r.label}
+            </span>
+            <span style={{ fontWeight: 600 }}>{r.value}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -373,8 +384,6 @@ const CAMPAIGN_DETAIL_OTHER_COLUMNS = [
   'TACOS',
   'Organic Unit Sold',
   'Organic Revenue',
-  'NTB Unit Sold',
-  'NTB Revenue',
 ];
 
 const CAMPAIGN_GROUP_FILTERS = [
@@ -1098,8 +1107,6 @@ export default function Marketing() {
       'TACOS',
       'Organic Unit Sold',
       'Organic Revenue',
-      'NTB Unit Sold',
-      'NTB Revenue',
     ]);
 
     const toNum = (val) => {
@@ -1626,7 +1633,6 @@ export default function Marketing() {
       'Ad Sales',
       'Overall Revenue',
       'Organic Revenue',
-      'NTB Revenue',
     ]);
     const percentCols = new Set(['CTR', 'CVR', 'ACoS', 'TACOS']);
     const intCols = new Set([
@@ -1635,7 +1641,6 @@ export default function Marketing() {
       'Ad Unit Sold',
       'Overall Unit Sold',
       'Organic Unit Sold',
-      'NTB Unit Sold',
     ]);
 
     if (currencyCols.has(col)) return formatAed(value);
@@ -2140,7 +2145,15 @@ export default function Marketing() {
                     axisLine={false}
                     tick={{ fontSize: 11, fill: '#2563eb' }}
                   />
-                  <Tooltip content={<MarketingPerformanceTooltip />} />
+                  <Tooltip
+                    content={(tooltipProps) => (
+                      <MarketingPerformanceTooltip
+                        {...tooltipProps}
+                        selectedMetrics={performanceCards}
+                        seriesVisible={performanceSeriesVisible}
+                      />
+                    )}
+                  />
                   {performanceCards.some((id, i) => id === 'impressions' && performanceSeriesVisible[i]) && (
                     <Bar
                       yAxisId="right"
@@ -2696,7 +2709,15 @@ export default function Marketing() {
                       axisLine={false}
                       tick={{ fontSize: 11, fill: '#2563eb' }}
                     />
-                    <Tooltip content={<MarketingPerformanceTooltip />} />
+                    <Tooltip
+                      content={(tooltipProps) => (
+                        <MarketingPerformanceTooltip
+                          {...tooltipProps}
+                          selectedMetrics={campaignPerformanceCards}
+                          seriesVisible={campaignPerformanceSeriesVisible}
+                        />
+                      )}
+                    />
                     {campaignPerformanceCards.some((id, i) => id === 'impressions' && campaignPerformanceSeriesVisible[i]) && (
                       <Bar
                         yAxisId="right"

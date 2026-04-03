@@ -4,6 +4,9 @@ import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
 import { useSalesChannels } from '../../hooks/useSalesChannels';
 
+/** Sales channel dropdown: aggregate every channel; rows merge by ASIN (same as single-channel ASIN totals). */
+const ALL_CHANNELS_VALUE = '__ALL_CHANNELS__';
+
 const DATE_FILTER_OPTIONS = [
   { id: '', label: '— Select period —' },
   { id: 'CURRENT_DAY', label: 'Current Day' },
@@ -382,7 +385,9 @@ export default function Revenue() {
     if (dateFilterType) params.dateFilterType = dateFilterType;
     if (customRangeStart) params.customRangeStart = customRangeStart;
     if (customRangeEnd) params.customRangeEnd = customRangeEnd;
-    if (filters.channel) params.salesChannel = String(filters.channel).trim();
+    if (filters.channel && filters.channel !== ALL_CHANNELS_VALUE) {
+      params.salesChannel = String(filters.channel).trim();
+    }
     dashboardApi
       .getRevenue(params)
       .then((data) => {
@@ -414,7 +419,10 @@ export default function Revenue() {
 
   useEffect(() => {
     let cancelled = false;
-    const channel = filters.channel ? String(filters.channel).trim() : '';
+    const channel =
+      filters.channel && filters.channel !== ALL_CHANNELS_VALUE
+        ? String(filters.channel).trim()
+        : '';
     dashboardApi
       .getLatestUpdatedDate({ dataset: 'revenue', salesChannel: channel })
       .then((resp) => {
@@ -477,6 +485,7 @@ export default function Revenue() {
   // Ensure the selected channel matches an available option.
   // This prevents an initial load with a channel value that isn't recognized by the backend.
   useEffect(() => {
+    if (filters.channel === ALL_CHANNELS_VALUE) return;
     if (!channelOptions || channelOptions.length === 0) return;
     const normalize = (v) => String(v || '').trim().toLowerCase();
     const current = normalize(filters.channel);
@@ -510,7 +519,7 @@ export default function Revenue() {
     if (filters.productName && row.productName !== filters.productName) return false;
     if (filters.category && getRowProductCategory(row) !== filters.category) return false;
     if (filters.packSize && getRowPackSize(row) !== filters.packSize) return false;
-    if (filters.channel) {
+    if (filters.channel && filters.channel !== ALL_CHANNELS_VALUE) {
       const selected = String(filters.channel || '').trim().toLowerCase();
       const rowVal = String(row.salesChannel || row.channel || '').trim().toLowerCase();
       if (selected && rowVal !== selected) return false;
@@ -538,10 +547,11 @@ export default function Revenue() {
 
   const filteredRows = revenueRows.filter(applyFilters);
 
-  const aggregatedFilteredRows = useMemo(
-    () => mergeRevenueRowsByAsin(filteredRows),
-    [filteredRows],
-  );
+  const aggregatedFilteredRows = useMemo(() => {
+    const merged = mergeRevenueRowsByAsin(filteredRows);
+    if (filters.channel !== ALL_CHANNELS_VALUE) return merged;
+    return merged.map((r) => ({ ...r, salesChannel: 'All channels' }));
+  }, [filteredRows, filters.channel]);
 
   const tableRows = useMemo(() => {
     if (detailedView === 'all') return aggregatedFilteredRows;
@@ -975,7 +985,7 @@ export default function Revenue() {
     filters.productName ||
     filters.category ||
     filters.packSize ||
-    filters.channel !== '';
+    filters.channel !== 'Seller Central';
 
   /* Only show clear when user has changed something from default (e.g. not just "Current Month" with no filters) */
   const hasFiltersToClear =
@@ -987,7 +997,7 @@ export default function Revenue() {
     filters.productName ||
     filters.category ||
     filters.packSize ||
-    filters.channel !== '';
+    filters.channel !== 'Seller Central';
 
   const openMonthRangeDialog = () => {
     const startDate = parseYearMonth(customRangeStart);
@@ -1264,6 +1274,7 @@ export default function Revenue() {
   const dataUpdatedDate = (latestUpdatedAtByChannel || updatedAt)
     ? formatDateDDMonYY(String(latestUpdatedAtByChannel || updatedAt).split('T')[0])
     : null;
+  const isAllChannelsSelected = filters.channel === ALL_CHANNELS_VALUE;
 
   if (loading) {
     return (
@@ -1374,6 +1385,24 @@ export default function Revenue() {
           overflow: hidden;
           text-overflow: ellipsis;
         }
+
+        /* Title left; T-3 note + “Data updated” stacked on the right */
+        .revenue-kpi-header-right {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          justify-content: center;
+          gap: 0.35rem;
+          text-align: right;
+          min-width: 0;
+        }
+
+        .revenue-kpi-header-right .revenue-all-channels-t3 {
+          font-size: 0.75rem;
+          line-height: 1.35;
+          color: var(--text-muted, #64748b);
+          max-width: min(100%, 22rem);
+        }
       `}</style>
       <div className="card revenue-filters-card">
         <div className="filter-row filter-row-one">
@@ -1444,9 +1473,13 @@ export default function Revenue() {
           <div className="filter-group">
             <select
               value={filters.channel}
-              onChange={(e) => setFilters((f) => ({ ...f, channel: e.target.value }))}
+              onChange={(e) => {
+                setFilters((f) => ({ ...f, channel: e.target.value }));
+                setPage(1);
+              }}
               aria-label="Sales Channel"
             >
+              <option value={ALL_CHANNELS_VALUE}>All channels</option>
               {channelOptions.map((ch) => (
                 <option key={ch} value={ch}>
                   {ch}
@@ -1500,11 +1533,20 @@ export default function Revenue() {
       <div className="card">
         <div className="exec-kpi-top">
           <h3 className="exec-kpi-title">Key Revenue Metrics</h3>
-          {dataUpdatedDate && (
-            <span className="exec-updated-text">
-              <span className="pulse-dot" />
-              Data updated as of <strong>{dataUpdatedDate}</strong>
-            </span>
+          {(isAllChannelsSelected || dataUpdatedDate) && (
+            <div className="revenue-kpi-header-right">
+              {isAllChannelsSelected && (
+                <span className="revenue-all-channels-t3">
+                  All channels data follows T-3 availability.
+                </span>
+              )}
+              {dataUpdatedDate && (
+                <span className="exec-updated-text">
+                  <span className="pulse-dot" />
+                  Data updated as of <strong>{dataUpdatedDate}</strong>
+                </span>
+              )}
+            </div>
           )}
         </div>
         <div
