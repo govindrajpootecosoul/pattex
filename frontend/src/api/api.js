@@ -3,8 +3,22 @@ import { queryClient } from '../queryClient.js';
 
 function normalizeBaseUrl(raw) {
   if (!raw) return '';
-  // Remove trailing slashes so we can safely do `${base}${path}`
-  return String(raw).trim().replace(/\/+$/, '');
+  let base = String(raw).trim().replace(/\/+$/, '');
+  // Backend mounts everything under `/api` (see backend/server.js). Paths in this file are
+  // like `/auth/login`, so the base must end with `/api`. If env is only origin (e.g.
+  // http://host:3026), append `/api` so login and other calls hit the right routes.
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      const u = new URL(base);
+      const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+      if (path === '/') {
+        base = `${u.origin}/api`;
+      }
+    } catch {
+      /* keep base */
+    }
+  }
+  return base;
 }
 
 // Configure once via Vite env:
