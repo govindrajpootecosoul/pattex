@@ -14,6 +14,7 @@ const STOCK_FILTERS = [
 const METRIC_IDS = {
   AVAILABLE: 'AVAILABLE',
   LAST_30_SALES: 'LAST_30_SALES',
+  LAST_30_UNITS: 'LAST_30_UNITS',
   DOS: 'DOS',
   INSTOCK_RATE: 'INSTOCK_RATE',
 };
@@ -26,6 +27,8 @@ const INVENTORY_COLUMN_OPTIONS = [
   { id: 'channel', label: 'Sales Channel' },
   { id: 'available', label: 'Available' },
   { id: 'sales30', label: '30D Sales' },
+  { id: 'units30', label: '30D Units' },
+  { id: 'units', label: 'Units' },
   { id: 'dos', label: 'DOS' },
   { id: 'instockRate', label: 'Instock Rate' },
   { id: 'openPos', label: 'Open POs' },
@@ -48,22 +51,22 @@ function getStatusBadgeClass(status) {
 
 const computeSummary = (rows) => {
   if (!rows.length) {
-    return { totalAvailable: 0, last30Sales: 0, avgDos: 0, instockRate: 0 };
+    return { totalAvailable: 0, last30Sales: 0, last30Units: 0, avgDos: 0, instockRate: 0 };
   }
   const totalAvailable = rows.reduce((sum, r) => sum + (Number(r.available) || 0), 0);
   const last30Sales = rows.reduce((sum, r) => sum + (Number(r.last30DaysSales) || 0), 0);
+  const last30Units = rows.reduce((sum, r) => sum + (Number(r.last30DaysUnits) || 0), 0);
   const avgDos =
     rows.length > 0
       ? Math.round(rows.reduce((sum, r) => sum + (Number(r.dos) || 0), 0) / rows.length)
       : 0;
-  const instockRate =
+  const instockRateRaw =
     rows.length > 0
-      ? Math.round(
-          rows.reduce((sum, r) => sum + (Number(r.instockRate) || 0), 0) / rows.length,
-        )
+      ? rows.reduce((sum, r) => sum + (Number(r.instockRate) || 0), 0) / rows.length
       : 0;
+  const instockRate = Math.round(instockRateRaw * 10) / 10; // keep 1 decimal like KPI-style %
 
-  return { totalAvailable, last30Sales, avgDos, instockRate };
+  return { totalAvailable, last30Sales, last30Units, avgDos, instockRate };
 };
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -78,6 +81,19 @@ const normalizeDateKey = (value) => {
     const monStr = dddMonYyyy[2];
     const year = parseInt(dddMonYyyy[3], 10);
     const mi = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === monStr.toLowerCase());
+    if (mi >= 0 && year && day >= 1 && day <= 31) {
+      const m = mi + 1;
+      return `${year}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+  // Support common 2-digit year formats in inventory data: "2-Apr-26", "17-feb-26"
+  const dddMonYy = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+  if (dddMonYy) {
+    const day = parseInt(dddMonYy[1], 10);
+    const monStr = dddMonYy[2];
+    const yy = parseInt(dddMonYy[3], 10);
+    const mi = MONTHS_SHORT.findIndex((m) => m.toLowerCase() === monStr.toLowerCase());
+    const year = Number.isFinite(yy) ? 2000 + yy : NaN;
     if (mi >= 0 && year && day >= 1 && day <= 31) {
       const m = mi + 1;
       return `${year}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -172,10 +188,56 @@ function csvEscape(field) {
   return s;
 }
 
+function normalizeInventoryRow(rawRow) {
+  const row = rawRow && typeof rawRow === 'object' ? rawRow : {};
+  const get = (...keys) => {
+    for (const k of keys) {
+      if (!k) continue;
+      const v = row[k];
+      if (v !== undefined && v !== null) return v;
+    }
+    return undefined;
+  };
+  const num = (v) => {
+    if (v === '' || v == null) return 0;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const channel =
+    get('channel', 'salesChannel', 'sales_channel', 'sales_channel ', 'Sales Channel', 'Sales Channel ', 'sales_channel') ??
+    get('sales_channel');
+
+  return {
+    ...row,
+    // UI expects these canonical keys
+    id: row.id ?? row._id ?? row.asin ?? undefined,
+    asin: get('asin', 'ASIN') ?? '',
+    productName: get('productName', 'product_name', 'Product Name') ?? '',
+    // Category is handled via getRowProductCategory() which already supports product_category variants.
+    packSize: get('packSize', 'pack_size', 'Pack Size') ?? get('pack_type', 'packType') ?? '',
+    channel: channel ?? '',
+    salesChannel: get('salesChannel', 'sales_channel') ?? channel ?? '',
+    available: num(get('available', 'available_inventory', 'Available Inventory', 'availableInventory')),
+    last30DaysSales: num(get('last30DaysSales', 'total_sales', 'Total Sales', 'overall_sales', 'overallSales')),
+    last30DaysUnits: num(get('last30DaysUnits', 'last30DaysUnitsRaw')),
+    totalUnits: num(get('totalUnits', 'total_units', 'Total Units', 'total_unit')),
+    openPos: num(get('openPos', 'open_pos', 'open_pos ', 'Open POs', 'open_pos')),
+    instockRate: num(get('instockRate', 'instock_rate', 'Instock Rate', 'instockRate')),
+    dos: num(get('dos', 'DOS')),
+    status: get('status', 'stock_status', 'Stock Status', 'stockStatus') ?? '',
+    reportDate: get('reportDate', 'date', 'Date', 'DATE') ?? row.reportDate,
+    oosDate: get('oosDate', 'oos_date', 'OOS Date') ?? row.oosDate,
+    noLowStockWithOpenPos: num(get('noLowStockWithOpenPos', 'no/low_stock_wt_open_pos', 'noLowStockWtOpenPos')),
+    noLowStockNoOpenPos: num(get('noLowStockNoOpenPos', 'no/low_stock_wt_no_open_pos', 'noLowStockWtNoOpenPos')),
+  };
+}
+
 export default function Inventory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const lastNonEmptyRowsRef = useRef([]);
   const [filters, setFilters] = useState({
     search: '',
     asin: '',
@@ -192,12 +254,10 @@ export default function Inventory() {
     return s === 'seller central' || s.includes('seller central');
   }, [filters.channel]);
   const maxSelectableDateStr = useMemo(() => {
-    // Seller Central can select "today"; other channels keep the T-3 guard.
-    if (isSellerCentralSelected) return todayStr;
-    const d = new Date();
-    d.setDate(d.getDate() - 3);
-    return d.toISOString().split('T')[0];
-  }, [isSellerCentralSelected, todayStr]);
+    // Allow selecting any past date for all channels/companies (Pattex/Emami).
+    // Keep the max at "today" to avoid picking future dates.
+    return todayStr;
+  }, [todayStr]);
   const [selectedDate, setSelectedDate] = useState(() => {
     // Match initial date to current default channel (Seller Central).
     return new Date().toISOString().split('T')[0];
@@ -211,6 +271,8 @@ export default function Inventory() {
       channel: true,
       available: true,
       sales30: true,
+      units30: true,
+      units: true,
       dos: true,
       instockRate: true,
       openPos: true,
@@ -260,6 +322,13 @@ export default function Inventory() {
   const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [sort, setSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
 
+  const channelOptions = useMemo(() => {
+    if (allSalesChannels.length > 0) return allSalesChannels;
+    return Array.from(new Set(rows.map((r) => r.channel || r.salesChannel).filter(Boolean))).sort((a, b) =>
+      String(a).localeCompare(String(b)),
+    );
+  }, [allSalesChannels, rows]);
+
   useEffect(() => {
     setLoading(true);
     setError('');
@@ -274,7 +343,11 @@ export default function Inventory() {
       .getInventory(params)
       .then((data) => {
         const apiRows = Array.isArray(data.rows) ? data.rows : [];
-        setRows(apiRows);
+        const normalized = apiRows.map(normalizeInventoryRow);
+        setRows(normalized);
+        if (normalized.length > 0) {
+          lastNonEmptyRowsRef.current = normalized;
+        }
         setUpdatedAt(data?.updatedAt ?? null);
       })
       .catch((e) => {
@@ -286,8 +359,24 @@ export default function Inventory() {
   useEffect(() => {
     let cancelled = false;
     const channel = filters.channel ? String(filters.channel).trim() : '';
+    const normalize = (v) =>
+      String(v ?? '')
+        .replace(/\u00A0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+    const hasChannelInOptions =
+      Boolean(channel) &&
+      Array.isArray(channelOptions) &&
+      channelOptions.length > 0 &&
+      channelOptions.some((opt) => normalize(opt) === normalize(channel));
+
+    // If the currently selected channel isn't available for this login (common on first render
+    // when default is "Seller Central" but company doesn't have it), ask backend for the latest
+    // date without a channel filter so we can still anchor the date picker and trigger a refetch.
+    const channelForLatestDate = hasChannelInOptions ? channel : '';
     dashboardApi
-      .getLatestUpdatedDate({ dataset: 'inventory', salesChannel: channel })
+      .getLatestUpdatedDate({ dataset: 'inventory', salesChannel: channelForLatestDate })
       .then((resp) => {
         if (cancelled) return;
         setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
@@ -301,14 +390,16 @@ export default function Inventory() {
         setLatestUpdatedAtByChannel(null);
       });
     return () => { cancelled = true; };
-  }, [filters.channel]); // intentionally not depending on selectedDate to avoid loops
+  }, [filters.channel, channelOptions]); // intentionally not depending on selectedDate to avoid loops
+
+  const rowsForFilterOptions = rows.length > 0 ? rows : (Array.isArray(lastNonEmptyRowsRef.current) ? lastNonEmptyRowsRef.current : []);
 
   // Cascading options: Category -> Product Name -> ASIN
-  const categoryOptions = Array.from(new Set(rows.map(getRowProductCategory).filter(Boolean)));
+  const categoryOptions = Array.from(new Set(rowsForFilterOptions.map(getRowProductCategory).filter(Boolean)));
 
   const rowsForProductNames = filters.category
-    ? rows.filter((r) => getRowProductCategory(r) === filters.category)
-    : rows;
+    ? rowsForFilterOptions.filter((r) => getRowProductCategory(r) === filters.category)
+    : rowsForFilterOptions;
   const productNameOptions = Array.from(
     new Set(rowsForProductNames.map((r) => r.productName).filter(Boolean)),
   );
@@ -318,10 +409,6 @@ export default function Inventory() {
       ? rowsForProductNames.filter((r) => r.productName === filters.productName)
       : rowsForProductNames;
   const asinOptions = Array.from(new Set(rowsForAsins.map((r) => r.asin).filter(Boolean)));
-  const channelOptions = useMemo(() => {
-    if (allSalesChannels.length > 0) return allSalesChannels;
-    return Array.from(new Set(rows.map((r) => r.channel || r.salesChannel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
-  }, [allSalesChannels, rows]);
 
   // Ensure the selected channel matches an available option on first render/load.
   useEffect(() => {
@@ -383,7 +470,7 @@ export default function Inventory() {
 
   const applyDateFilter = (row) => {
     if (!selectedDate) return true;
-    const rowDate = row.reportDate || normalizeDateKey(row.oosDate);
+    const rowDate = normalizeDateKey(row.reportDate) || normalizeDateKey(row.date) || normalizeDateKey(row.oosDate);
     if (!rowDate) return false;
     return rowDate === selectedDate;
   };
@@ -442,6 +529,16 @@ export default function Inventory() {
     return map;
   }, [aggregatedFilteredRows]);
 
+  const last30UnitsByAsin = useMemo(() => {
+    const map = {};
+    aggregatedFilteredRows.forEach((row) => {
+      const asin = row.asin;
+      if (!asin) return;
+      map[asin] = Number(row.last30DaysUnits) || 0;
+    });
+    return map;
+  }, [aggregatedFilteredRows]);
+
   // Cascading filter handlers
   const handleCategoryChange = (e) => {
     const value = e.target.value;
@@ -495,6 +592,10 @@ export default function Inventory() {
       last30SalesByAsin[row.asin] != null
         ? last30SalesByAsin[row.asin]
         : Number(row.last30DaysSales) || 0;
+    const units30Val =
+      last30UnitsByAsin[row.asin] != null
+        ? last30UnitsByAsin[row.asin]
+        : Number(row.last30DaysUnits) || 0;
     switch (columnId) {
       case 'asin':
         return row.asin ?? '—';
@@ -510,6 +611,10 @@ export default function Inventory() {
         return String(row.available ?? '');
       case 'sales30':
         return `AED ${Math.round(salesVal).toLocaleString()}`;
+      case 'units30':
+        return String(Math.round(Number(units30Val) || 0));
+      case 'units':
+        return String(row.totalUnits ?? '');
       case 'dos':
         return String(row.dos ?? '');
       case 'instockRate':
@@ -628,6 +733,10 @@ export default function Inventory() {
         title = 'Last 30 Days Sales – SKU Breakdown';
         columns = ['ASIN', 'Product Name', 'Sales Channel', 'Last 30 Days Sales'];
         break;
+      case METRIC_IDS.LAST_30_UNITS:
+        title = 'Last 30 Days Units – SKU Breakdown';
+        columns = ['ASIN', 'Product Name', 'Sales Channel', 'Last 30 Days Units'];
+        break;
       case METRIC_IDS.DOS:
         title = 'Average Days of Supply – SKU Breakdown';
         columns = ['ASIN', 'Product Name', 'Sales Channel', 'Days of Supply'];
@@ -677,6 +786,14 @@ export default function Inventory() {
                         <td>AED {Math.round(Number(row.last30DaysSales) || 0).toLocaleString()}</td>
                       </>
                     )}
+                    {metricModal === METRIC_IDS.LAST_30_UNITS && (
+                      <>
+                        <td>{row.asin}</td>
+                        <td>{row.productName}</td>
+                        <td>{row.channel}</td>
+                        <td>{Math.round(Number(row.last30DaysUnits) || 0).toLocaleString()}</td>
+                      </>
+                    )}
                     {metricModal === METRIC_IDS.DOS && (
                       <>
                         <td>{row.asin}</td>
@@ -710,6 +827,8 @@ export default function Inventory() {
 
     const getSales30 = (row) =>
       last30SalesByAsin[row.asin] != null ? last30SalesByAsin[row.asin] : Number(row.last30DaysSales) || 0;
+    const getUnits30 = (row) =>
+      last30UnitsByAsin[row.asin] != null ? last30UnitsByAsin[row.asin] : Number(row.last30DaysUnits) || 0;
 
     const getCellValue = (row) => {
       switch (key) {
@@ -723,6 +842,10 @@ export default function Inventory() {
           return Number(row.available);
         case 'sales30':
           return Number(getSales30(row));
+        case 'units30':
+          return Number(getUnits30(row));
+        case 'units':
+          return Number(row.totalUnits);
         case 'dos':
           return Number(row.dos);
         case 'instockRate':
@@ -734,7 +857,7 @@ export default function Inventory() {
       }
     };
 
-    const isNumericKey = new Set(['packSize', 'available', 'sales30', 'dos', 'instockRate', 'openPos']).has(key);
+    const isNumericKey = new Set(['packSize', 'available', 'sales30', 'units30', 'units', 'dos', 'instockRate', 'openPos']).has(key);
 
     const compare = (a, b) => {
       const av = getCellValue(a);
@@ -1060,6 +1183,16 @@ export default function Inventory() {
           </button>
           <button
             type="button"
+            className="kpi-item kpi-clickable kpi-indigo"
+            onClick={() => openMetricModal(METRIC_IDS.LAST_30_UNITS)}
+          >
+            <div className="label">Last 30 Days Units</div>
+            <div className="value value-primary">
+              {Math.round(summary.last30Units).toLocaleString()}
+            </div>
+          </button>
+          <button
+            type="button"
             className="kpi-item kpi-clickable kpi-amber"
             onClick={() => openMetricModal(METRIC_IDS.DOS)}
           >
@@ -1075,7 +1208,7 @@ export default function Inventory() {
           >
             <div className="label">Instock Rate</div>
             <div className="value value-primary">
-              {summary.instockRate}%
+              {Number(summary.instockRate || 0).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%
             </div>
           </button>
         </div>
@@ -1177,7 +1310,7 @@ export default function Inventory() {
                   if (!visibleColumns[id]) return null;
                   const col = columnDefsById[id];
                   if (!col) return null;
-                  const quantityRevenueCols = new Set(['available', 'sales30', 'dos', 'openPos']);
+                  const quantityRevenueCols = new Set(['available', 'sales30', 'units30', 'units', 'dos', 'openPos']);
                   const metricColsRight = new Set(['instockRate']);
                   const baseCls =
                     id === 'productName'
@@ -1189,7 +1322,7 @@ export default function Inventory() {
                           : metricColsRight.has(id)
                             ? 'col-num'
                             : '';
-                  const isSortable = new Set(['productName', 'category', 'packSize', 'available', 'sales30', 'dos', 'instockRate', 'openPos']).has(id);
+                  const isSortable = new Set(['productName', 'category', 'packSize', 'available', 'sales30', 'units30', 'units', 'dos', 'instockRate', 'openPos']).has(id);
                   const isActive = sort?.key === id;
                   const ascActive = isActive && sort?.dir === 'asc';
                   const descActive = isActive && sort?.dir === 'desc';
@@ -1263,6 +1396,18 @@ export default function Inventory() {
                         </td>
                       );
                     }
+                    if (id === 'units30') {
+                      return (
+                        <td key={id} className="inventory-detailed-metric">
+                          {Math.round(
+                            last30UnitsByAsin[row.asin] != null
+                              ? last30UnitsByAsin[row.asin]
+                              : Number(row.last30DaysUnits) || 0,
+                          ).toLocaleString()}
+                        </td>
+                      );
+                    }
+                    if (id === 'units') return <td key={id} className="inventory-detailed-metric">{(Number(row.totalUnits) || 0).toLocaleString()}</td>;
                     if (id === 'dos') return <td key={id} className="inventory-detailed-metric">{row.dos}</td>;
                     if (id === 'instockRate') return <td key={id} className="col-num">{row.instockRate}%</td>;
                     if (id === 'openPos') return <td key={id} className="inventory-detailed-metric">{row.openPos}</td>;

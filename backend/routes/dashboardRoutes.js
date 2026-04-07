@@ -311,8 +311,9 @@ function dateMatchQuery(fieldName, dateKey) {
   return {
     $or: [
       { [fieldName]: { $regex: `^\\s*${dateKey}` } },
-      { [fieldName]: { $regex: `^\\s*${ddMonYYYY}` } },
-      { [fieldName]: { $regex: `^\\s*${ddMonYY}` } },
+      // Month abbreviations can be stored in different casing (e.g. "17-feb-26" vs "17-Feb-26").
+      { [fieldName]: { $regex: `^\\s*${ddMonYYYY}`, $options: 'i' } },
+      { [fieldName]: { $regex: `^\\s*${ddMonYY}`, $options: 'i' } },
       { [fieldName]: { $gte: start, $lte: end } },
     ],
   };
@@ -3066,7 +3067,7 @@ router.get('/marketing', async (req, res) => {
 router.get('/inventory', async (req, res) => {
   try {
     // Bump cache key version so category field fixes apply immediately.
-    const cacheKey = buildDashboardCacheKey(req, 'inventory:v5');
+    const cacheKey = buildDashboardCacheKey(req, 'inventory:v8');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -3144,6 +3145,7 @@ router.get('/inventory', async (req, res) => {
     /** Per-ASIN sum of Revenue.total_sales over up to 30 days ending on snapshot day (inclusive).
      *  Only days present in Revenue count—partial history still yields a real total. */
     let salesByAsinFromRevenue = null;
+    let unitsByAsinFromRevenue = null;
     if (inventoryAnchorKey && inventoryEndKey === inventoryAnchorKey) {
       const parts = inventoryAnchorKey.split('-');
       const ey = parseInt(parts[0], 10);
@@ -3161,6 +3163,7 @@ router.get('/inventory', async (req, res) => {
         });
         if (clauses.length) {
           salesByAsinFromRevenue = new Map();
+          unitsByAsinFromRevenue = new Map();
           const revenueDocs = await req.companyModels.Revenue.find({ $or: clauses }).lean();
           const reqSalesChannel = req.query.salesChannel ? String(req.query.salesChannel).trim().toLowerCase() : '';
           revenueDocs.forEach((rDoc) => {
@@ -3174,7 +3177,9 @@ router.get('/inventory', async (req, res) => {
             const revAsin = revenueAsinFromDoc(rDoc);
             if (!revAsin) return;
             const sales = parseNum(rDoc.total_sales);
+            const units = parseNum(rDoc.total_units ?? rDoc.totalUnits ?? rDoc.total_unit);
             salesByAsinFromRevenue.set(revAsin, (salesByAsinFromRevenue.get(revAsin) || 0) + sales);
+            unitsByAsinFromRevenue.set(revAsin, (unitsByAsinFromRevenue.get(revAsin) || 0) + units);
           });
         }
       }
@@ -3186,6 +3191,9 @@ router.get('/inventory', async (req, res) => {
       const fromSheet = Number(doc.total_sales ?? 0);
       const fromRev = salesByAsinFromRevenue != null ? salesByAsinFromRevenue.get(rowAsin) : undefined;
       const last30DaysSales = fromRev !== undefined ? fromRev : fromSheet;
+      const totalUnits = Number(doc.total_units ?? doc.totalUnits ?? doc['Total Units'] ?? doc.total_unit ?? 0);
+      const unitsFromRev = unitsByAsinFromRevenue != null ? unitsByAsinFromRevenue.get(rowAsin) : undefined;
+      const last30DaysUnits = unitsFromRev !== undefined ? unitsFromRev : totalUnits;
       const dos = Number(doc.DOS ?? doc.dos ?? 0);
       const instockRate = Number(doc['Instock Rate'] ?? doc.instock_rate ?? 0);
       const openPos = Number(doc['Open POs'] ?? doc.open_pos ?? 0);
@@ -3234,6 +3242,10 @@ router.get('/inventory', async (req, res) => {
         sales_channel: salesChannel,
         available: availableInventory,
         last30DaysSales,
+        last30DaysUnits,
+        last30DaysUnitsRaw: last30DaysUnits,
+        totalUnits,
+        total_units: totalUnits,
         dos,
         instockRate,
         openPos,
@@ -3695,7 +3707,7 @@ router.get('/buybox', async (req, res) => {
 
 router.get('/buybox-last30-sales', async (req, res) => {
   try {
-    const cacheKey = buildDashboardCacheKey(req, 'buybox-last30-sales');
+    const cacheKey = buildDashboardCacheKey(req, 'buybox-last30-sales:v2');
     const ttlSeconds = 600; // 10 minutes
     const cached = await Cache.get(cacheKey);
     if (cached) {
@@ -3736,6 +3748,7 @@ router.get('/buybox-last30-sales', async (req, res) => {
     const docs = await req.companyModels.Revenue.find(docsFilter).lean();
 
     const byAsin = new Map();
+    const unitsByAsin = new Map();
     docs.forEach((doc) => {
       if (reqSalesChannel) {
         const ch = revenueChannelFromDoc(doc);
@@ -3747,11 +3760,19 @@ router.get('/buybox-last30-sales', async (req, res) => {
       const asin = revenueAsinFromDoc(doc);
       if (!asin) return;
       const sales = parseNum(doc.total_sales);
-      if (!sales) return;
-      byAsin.set(asin, (byAsin.get(asin) || 0) + sales);
+      if (sales) {
+        byAsin.set(asin, (byAsin.get(asin) || 0) + sales);
+      }
+      const units = parseNum(doc.total_units ?? doc.totalUnits ?? doc.total_unit);
+      if (units) {
+        unitsByAsin.set(asin, (unitsByAsin.get(asin) || 0) + units);
+      }
     });
 
-    const payload = { last30SalesByAsin: Object.fromEntries(byAsin.entries()) };
+    const payload = {
+      last30SalesByAsin: Object.fromEntries(byAsin.entries()),
+      last30UnitsByAsin: Object.fromEntries(unitsByAsin.entries()),
+    };
     await Cache.set(cacheKey, payload, ttlSeconds);
     res.set('X-Cache', 'MISS');
     res.set('Cache-Control', `private, max-age=${ttlSeconds}`);

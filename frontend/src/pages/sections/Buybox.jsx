@@ -30,6 +30,7 @@ const BUYBOX_COLUMN_OPTIONS = [
   { id: 'packType', label: 'Pack Type' },
   { id: 'packSize', label: 'Pack Size' },
   { id: 'totalSales', label: 'Last 30 Days Sales' },
+  { id: 'totalUnits30', label: 'Last 30 Days Units' },
   { id: 'totalSale', label: 'Total Sale' },
   { id: 'openPOs', label: 'Open POs' },
   { id: 'dos', label: 'DOS' },
@@ -374,6 +375,7 @@ export default function Buybox() {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [previousDayRows, setPreviousDayRows] = useState([]);
   const [last30SalesByAsinMap, setLast30SalesByAsinMap] = useState(() => new Map());
+  const [last30UnitsByAsinMap, setLast30UnitsByAsinMap] = useState(() => new Map());
   const [visibleColumns, setVisibleColumns] = useState(() => {
     const defaults = {
       asin: true,
@@ -401,6 +403,7 @@ export default function Buybox() {
       oosDate: true,
       totalSales: true,
       totalSale: true,
+      totalUnits30: true,
       totalUnits: true,
       sellThrough: true,
       dos: true,
@@ -517,16 +520,24 @@ export default function Buybox() {
         ...(channel ? { salesChannel: channel } : {}),
       })
       .then((resp) => {
-        const obj = resp?.last30SalesByAsin || {};
-        const m = new Map();
-        Object.keys(obj).forEach((k) => {
+        const objSales = resp?.last30SalesByAsin || {};
+        const objUnits = resp?.last30UnitsByAsin || {};
+        const mSales = new Map();
+        Object.keys(objSales).forEach((k) => {
           if (!k) return;
-          m.set(k, parseNumLoose(obj[k]));
+          mSales.set(k, parseNumLoose(objSales[k]));
         });
-        setLast30SalesByAsinMap(m);
+        const mUnits = new Map();
+        Object.keys(objUnits).forEach((k) => {
+          if (!k) return;
+          mUnits.set(k, parseNumLoose(objUnits[k]));
+        });
+        setLast30SalesByAsinMap(mSales);
+        setLast30UnitsByAsinMap(mUnits);
       })
       .catch(() => {
         setLast30SalesByAsinMap(new Map());
+        setLast30UnitsByAsinMap(new Map());
       });
   }, [selectedDate, filters.channel]);
 
@@ -787,6 +798,7 @@ export default function Buybox() {
       case 'packType': return textOrZero(pick(row, ['Pack Type', 'packType']));
       case 'packSize': return textOrZero(row.packSize);
       case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
+      case 'totalUnits30': return textOrZero(last30UnitsByAsinMap.get(row.asin) || 0);
       case 'totalSale': return formatAed(pick(row, ['totalSales', 'total_sales']));
       case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
       case 'dos': return textOrZero(pick(row, ['DOS', 'dos']));
@@ -856,6 +868,7 @@ export default function Buybox() {
       case 'packType': return textOrZero(pick(row, ['Pack Type', 'packType']));
       case 'packSize': return textOrZero(row.packSize);
       case 'totalSales': return formatAed(last30SalesByAsinMap.get(row.asin) || 0);
+      case 'totalUnits30': return textOrZero(last30UnitsByAsinMap.get(row.asin) || 0);
       case 'totalSale': return formatAed(pick(row, ['totalSales', 'total_sales']));
       case 'openPOs': return textOrZero(pick(row, ['Open POs', 'openPOs']));
       case 'dos': return textOrZero(pick(row, ['DOS', 'dos']));
@@ -1139,6 +1152,8 @@ export default function Buybox() {
           return row?.packSize ?? '';
         case 'totalSales':
           return Number(last30SalesByAsinMap.get(row?.asin) ?? 0);
+        case 'totalUnits30':
+          return Number(last30UnitsByAsinMap.get(row?.asin) ?? 0);
         case 'totalSale':
           return parseNumLoose(pick(row, ['totalSales', 'total_sales']));
         case 'openPOs':
@@ -1237,6 +1252,7 @@ export default function Buybox() {
     const numericKeys = new Set([
       'packSize',
       'totalSales',
+      'totalUnits30',
       'totalSale',
       'openPOs',
       'dos',
@@ -1305,7 +1321,7 @@ export default function Buybox() {
       return dir === 'desc' ? -c : c;
     });
     return base;
-  }, [aggregatedFilteredRows, last30SalesByAsinMap, sort]);
+  }, [aggregatedFilteredRows, last30SalesByAsinMap, last30UnitsByAsinMap, sort]);
 
   if (loading) return <div className="section-muted">Loading...</div>;
   if (error) return <div className="auth-error">{error}</div>;

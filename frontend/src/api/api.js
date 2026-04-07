@@ -22,9 +22,21 @@ function normalizeBaseUrl(raw) {
 }
 
 // Configure once via Vite env:
-// - Local dev (recommended): leave unset and use Vite proxy for `/api`
+// - Local dev: set `VITE_API_BASE_URL=http://localhost:3026` (or `http://localhost:3026/api`)
 // - Production: set `VITE_API_BASE_URL=https://dashbackend.thrivebrands.ai/api`
-const API_BASE = normalizeBaseUrl(import.meta.env?.VITE_API_BASE_URL) || '/api';
+//
+// NOTE: API base is intentionally mandatory to avoid silently calling the dev proxy (`/api`)
+// when env is missing/commented.
+const API_BASE = normalizeBaseUrl(import.meta.env?.VITE_API_BASE_URL);
+
+function requireApiBase() {
+  if (!API_BASE) {
+    throw new Error(
+      'Configuration error: API URL is not set. Please set VITE_API_BASE_URL in frontend/.env and restart the app.',
+    );
+  }
+  return API_BASE;
+}
 
 function isNetworkError(err) {
   const msg = (err && err.message) || '';
@@ -59,13 +71,13 @@ async function request(path, options = {}) {
       fetchInit.signal = signal;
     }
     try {
-      res = await fetch(`${API_BASE}${path}`, fetchInit);
+      res = await fetch(`${requireApiBase()}${path}`, fetchInit);
     } catch (err) {
       if (isCancelledError(err) || err?.name === 'AbortError') {
         throw err;
       }
       if (isNetworkError(err)) {
-        throw new Error('Cannot reach server. Start the backend with: cd backend && npm run dev');
+        throw new Error('Server error: cannot reach backend. Please start the backend and try again.');
       }
       throw err;
     }
@@ -155,7 +167,7 @@ export const dashboardApi = {
     const path = `/dashboard/executive-asin-performance-csv${q.toString() ? `?${q}` : ''}`;
     let res;
     try {
-      res = await fetch(`${API_BASE}${path}`, {
+      res = await fetch(`${requireApiBase()}${path}`, {
         method: 'GET',
         headers: {
           ...(token && { Authorization: `Bearer ${token}` }),
@@ -164,7 +176,7 @@ export const dashboardApi = {
       });
     } catch (err) {
       if (isNetworkError(err)) {
-        throw new Error('Cannot reach server. Start the backend with: cd backend && npm run dev');
+        throw new Error('Server error: cannot reach backend. Please start the backend and try again.');
       }
       throw err;
     }

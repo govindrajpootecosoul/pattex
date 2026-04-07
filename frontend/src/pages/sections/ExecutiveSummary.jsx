@@ -3,8 +3,10 @@ import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
 import { useSalesChannels } from '../../hooks/useSalesChannels';
+import { useAuth } from '../../context/AuthContext';
 
 export default function ExecutiveSummary() {
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -31,6 +33,39 @@ export default function ExecutiveSummary() {
     setActiveDeepDiveTab(tab);
     setPage(1);
   };
+
+  const normalizeDbName = (v) => String(v ?? '').trim().toLowerCase();
+  const isEmami = useMemo(() => {
+    const db = normalizeDbName(user?.databaseName);
+    return Boolean(db) && db.includes('emami');
+  }, [user?.databaseName]);
+
+  const allowedDateFilters = useMemo(() => {
+    if (isEmami) {
+      return [
+        { value: 'CURRENT_MONTH', label: 'Current Month' },
+        { value: 'PREVIOUS_MONTH', label: 'Previous Month' },
+      ];
+    }
+    return [
+      { value: 'CURRENT_DAY', label: 'Current Day' },
+      { value: 'PREVIOUS_DAY', label: 'Previous Day' },
+      { value: 'CURRENT_WEEK', label: 'Current Week' },
+      { value: 'PREVIOUS_WEEK', label: 'Previous Week' },
+      { value: 'CURRENT_MONTH', label: 'Current Month' },
+      { value: 'PREVIOUS_MONTH', label: 'Previous Month' },
+    ];
+  }, [isEmami]);
+
+  // If Emami user arrives with an unsupported date filter (default is CURRENT_DAY), auto-switch to CURRENT_MONTH.
+  useEffect(() => {
+    if (!isEmami) return;
+    const allowed = new Set(allowedDateFilters.map((o) => o.value));
+    if (!allowed.has(dateFilterType)) {
+      setDateFilterType('CURRENT_MONTH');
+      setPage(1);
+    }
+  }, [isEmami, allowedDateFilters, dateFilterType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -522,17 +557,17 @@ export default function ExecutiveSummary() {
     return [
       {
         metric: 'Overall Revenue',
-        target: Number(t.overallRevenue) || 0,
+        target: isEmami ? 0 : Number(t.overallRevenue) || 0,
         actualMTD: Number(a.overallRevenue) || 0,
         actualExpected: null,
-        variation: typeof v.overallRevenuePct === 'number' ? v.overallRevenuePct : null,
+        variation: isEmami ? null : (typeof v.overallRevenuePct === 'number' ? v.overallRevenuePct : null),
       },
       {
         metric: 'Overall Spend',
-        target: Number(t.overallSpend) || 0,
+        target: isEmami ? 0 : Number(t.overallSpend) || 0,
         actualMTD: Number(a.overallSpend) || 0,
         actualExpected: null,
-        variation: typeof v.overallSpendPct === 'number' ? v.overallSpendPct : null,
+        variation: isEmami ? null : (typeof v.overallSpendPct === 'number' ? v.overallSpendPct : null),
       },
     ];
   })();
@@ -629,12 +664,11 @@ export default function ExecutiveSummary() {
             }}
             aria-label="Date range"
           >
-            <option value="CURRENT_DAY">Current Day</option>
-            <option value="PREVIOUS_DAY">Previous Day</option>
-            <option value="CURRENT_WEEK">Current Week</option>
-            <option value="PREVIOUS_WEEK">Previous Week</option>
-            <option value="CURRENT_MONTH">Current Month</option>
-            <option value="PREVIOUS_MONTH">Previous Month</option>
+            {allowedDateFilters.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
           </select>
         </div>
       </header>
