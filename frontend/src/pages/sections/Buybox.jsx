@@ -3,6 +3,7 @@ import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
 import { useSalesChannels } from '../../hooks/useSalesChannels';
+import { useDatasetDateAnchor } from '../../hooks/useDatasetDateAnchor';
 
 const STOCK_FILTERS = [
   { id: 'NO_BUYBOX', label: 'ASINs with no Buybox' },
@@ -372,7 +373,6 @@ export default function Buybox() {
     d.setDate(d.getDate() - 3);
     return d.toISOString().split('T')[0];
   }, [isSellerCentralSelected, todayStr]);
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [previousDayRows, setPreviousDayRows] = useState([]);
   const [last30SalesByAsinMap, setLast30SalesByAsinMap] = useState(() => new Map());
   const [last30UnitsByAsinMap, setLast30UnitsByAsinMap] = useState(() => new Map());
@@ -473,12 +473,21 @@ export default function Buybox() {
   const [csvDownloading, setCsvDownloading] = useState(false);
   const [csvExportError, setCsvExportError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
-  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [salesChannelOptionsFromApi, setSalesChannelOptionsFromApi] = useState([]);
   const allSalesChannels = useSalesChannels();
+  const {
+    selectedDate,
+    setSelectedDate,
+    latestUpdatedAtByChannel,
+    dateReady,
+  } = useDatasetDateAnchor({
+    dataset: 'buybox',
+    channel: filters.channel,
+  });
   const [asinListModal, setAsinListModal] = useState(null); // null | 'with_buybox' | 'no_buybox'
 
   useEffect(() => {
+    if (!dateReady || !selectedDate) return undefined;
     setLoading(true);
     setError('');
     const params = {};
@@ -503,10 +512,11 @@ export default function Buybox() {
         setPreviousDayRows([]);
       })
       .finally(() => setLoading(false));
-  }, [selectedDate, filters.channel]);
+    return undefined;
+  }, [selectedDate, filters.channel, dateReady]);
 
   useEffect(() => {
-    if (!selectedDate) return;
+    if (!dateReady || !selectedDate) return undefined;
     const end = new Date(`${selectedDate}T00:00:00`);
     if (Number.isNaN(end.getTime())) return;
     const start = new Date(end);
@@ -539,27 +549,8 @@ export default function Buybox() {
         setLast30SalesByAsinMap(new Map());
         setLast30UnitsByAsinMap(new Map());
       });
-  }, [selectedDate, filters.channel]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const channel = filters.channel ? String(filters.channel).trim() : '';
-    dashboardApi
-      .getLatestUpdatedDate({ dataset: 'buybox', salesChannel: channel })
-      .then((resp) => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
-        const dateKey = resp?.dateKey ? String(resp.dateKey).slice(0, 10) : '';
-        if (dateKey && dateKey !== selectedDate) {
-          setSelectedDate(dateKey);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(null);
-      });
-    return () => { cancelled = true; };
-  }, [filters.channel]); // intentionally not depending on selectedDate to avoid loops
+    return undefined;
+  }, [selectedDate, filters.channel, dateReady]);
 
   // If channel changes to one with a stricter max, clamp the selected date.
   useEffect(() => {

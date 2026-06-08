@@ -153,6 +153,16 @@ export const dashboardApi = {
     const query = q.toString();
     return request(`/dashboard/executive-summary${query ? `?${query}` : ''}`);
   },
+  /** Single request for Executive Summary screen (summary + KPIs + revenue + latest date). */
+  getExecutiveSummaryBundle: (params) => {
+    const q = new URLSearchParams();
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    const query = q.toString();
+    return request(`/dashboard/executive-summary-bundle${query ? `?${query}` : ''}`);
+  },
   getKeyPerformanceMetrics: (params) => {
     const q = new URLSearchParams();
     if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
@@ -260,6 +270,26 @@ export const dashboardApi = {
     if (params?.campaignSalesChannel) q.set('campaignSalesChannel', params.campaignSalesChannel);
     const query = q.toString();
     return request(`/dashboard/marketing${query ? `?${query}` : ''}`);
+  },
+  /** Single request for Marketing screen (primary + funnel months + latest date). */
+  getMarketingBundle: (params) => {
+    const q = new URLSearchParams();
+    q.set('marketingCacheVersion', '5');
+    if (params?.dateFilterType) q.set('dateFilterType', params.dateFilterType);
+    if (params?.customRangeStart) q.set('customRangeStart', params.customRangeStart);
+    if (params?.customRangeEnd) q.set('customRangeEnd', params.customRangeEnd);
+    if (params?.asin) q.set('asin', params.asin);
+    if (params?.productName) q.set('productName', params.productName);
+    if (params?.productCategory) q.set('productCategory', params.productCategory);
+    if (params?.packSize) q.set('packSize', params.packSize);
+    if (params?.salesChannel) q.set('salesChannel', params.salesChannel);
+    if (params?.campaignDateRange) q.set('campaignDateRange', params.campaignDateRange);
+    if (params?.campaignType) q.set('campaignType', params.campaignType);
+    if (params?.campaignName) q.set('campaignName', params.campaignName);
+    if (params?.campaignPortfolio) q.set('campaignPortfolio', params.campaignPortfolio);
+    if (params?.campaignSalesChannel) q.set('campaignSalesChannel', params.campaignSalesChannel);
+    const query = q.toString();
+    return request(`/dashboard/marketing-bundle${query ? `?${query}` : ''}`);
   },
   getProductDetails: () => request('/dashboard/product-details'),
 };

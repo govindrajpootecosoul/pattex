@@ -3,6 +3,7 @@ import { dashboardApi } from '../../api/api';
 import Pagination from '../../components/Pagination';
 import { formatDateDDMonYY } from '../../utils/dateFormat';
 import { useSalesChannels } from '../../hooks/useSalesChannels';
+import { useDatasetDateAnchor } from '../../hooks/useDatasetDateAnchor';
 
 const STOCK_FILTERS = [
   { id: 'ALL_SKUS', label: 'All SKUs' },
@@ -245,7 +246,16 @@ export default function Inventory() {
     category: '',
     channel: 'Seller Central',
   });
-  const allSalesChannels = useSalesChannels();
+  const {
+    selectedDate,
+    setSelectedDate,
+    latestUpdatedAtByChannel,
+    dateReady,
+    channelOptions: anchoredChannelOptions,
+  } = useDatasetDateAnchor({
+    dataset: 'inventory',
+    channel: filters.channel,
+  });
   const [stockFilter, setStockFilter] = useState('ALL_SKUS');
   const [metricModal, setMetricModal] = useState(null);
   const [todayStr] = useState(() => new Date().toISOString().split('T')[0]);
@@ -258,10 +268,6 @@ export default function Inventory() {
     // Keep the max at "today" to avoid picking future dates.
     return todayStr;
   }, [todayStr]);
-  const [selectedDate, setSelectedDate] = useState(() => {
-    // Match initial date to current default channel (Seller Central).
-    return new Date().toISOString().split('T')[0];
-  });
   const [visibleColumns, setVisibleColumns] = useState(() => {
     const defaults = {
       asin: true,
@@ -319,17 +325,17 @@ export default function Inventory() {
   const [csvDownloading, setCsvDownloading] = useState(false);
   const [csvExportError, setCsvExportError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
-  const [latestUpdatedAtByChannel, setLatestUpdatedAtByChannel] = useState(null);
   const [sort, setSort] = useState({ key: 'productName', dir: 'asc' }); // default: Product Name A-Z
 
   const channelOptions = useMemo(() => {
-    if (allSalesChannels.length > 0) return allSalesChannels;
+    if (anchoredChannelOptions.length > 0) return anchoredChannelOptions;
     return Array.from(new Set(rows.map((r) => r.channel || r.salesChannel).filter(Boolean))).sort((a, b) =>
       String(a).localeCompare(String(b)),
     );
-  }, [allSalesChannels, rows]);
+  }, [anchoredChannelOptions, rows]);
 
   useEffect(() => {
+    if (!dateReady || !selectedDate) return undefined;
     setLoading(true);
     setError('');
     const params = {};
@@ -354,43 +360,8 @@ export default function Inventory() {
         setError(e.message);
       })
       .finally(() => setLoading(false));
-  }, [selectedDate, filters.channel]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const channel = filters.channel ? String(filters.channel).trim() : '';
-    const normalize = (v) =>
-      String(v ?? '')
-        .replace(/\u00A0/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .toLowerCase();
-    const hasChannelInOptions =
-      Boolean(channel) &&
-      Array.isArray(channelOptions) &&
-      channelOptions.length > 0 &&
-      channelOptions.some((opt) => normalize(opt) === normalize(channel));
-
-    // If the currently selected channel isn't available for this login (common on first render
-    // when default is "Seller Central" but company doesn't have it), ask backend for the latest
-    // date without a channel filter so we can still anchor the date picker and trigger a refetch.
-    const channelForLatestDate = hasChannelInOptions ? channel : '';
-    dashboardApi
-      .getLatestUpdatedDate({ dataset: 'inventory', salesChannel: channelForLatestDate })
-      .then((resp) => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
-        const dateKey = resp?.dateKey ? String(resp.dateKey).slice(0, 10) : '';
-        if (dateKey && dateKey !== selectedDate) {
-          setSelectedDate(dateKey);
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(null);
-      });
-    return () => { cancelled = true; };
-  }, [filters.channel, channelOptions]); // intentionally not depending on selectedDate to avoid loops
+    return undefined;
+  }, [selectedDate, filters.channel, dateReady]);
 
   const rowsForFilterOptions = rows.length > 0 ? rows : (Array.isArray(lastNonEmptyRowsRef.current) ? lastNonEmptyRowsRef.current : []);
 

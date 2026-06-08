@@ -2,6 +2,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { getCompanyModels } from '../models/companyDb.js';
 import Cache, { buildDashboardCacheKey } from '../utils/cache.js';
+import { runJsonRoute, forkDashboardReq } from '../utils/runJsonRoute.js';
 import {
   buildExecutiveAsinDeepDiveTableRows,
   executiveAsinRowsToCsv,
@@ -656,7 +657,8 @@ const productDetails = {
 };
 
 // All dashboard routes return data; protected by auth
-router.get('/latest-updated-date', async (req, res) => {
+router.get('/latest-updated-date', handleLatestUpdatedDate);
+async function handleLatestUpdatedDate(req, res) {
   try {
     const cacheKey = buildDashboardCacheKey(req, 'latest-updated-date');
     const ttlSeconds = 300; // 5 minutes
@@ -713,10 +715,10 @@ router.get('/latest-updated-date', async (req, res) => {
     console.error('Error fetching latest updated date:', error);
     return res.status(500).json({ message: 'Failed to fetch latest updated date' });
   }
-});
+}
 
-// Distinct Sales Channels (for dropdowns). Not filtered by date or other params.
-router.get('/sales-channels', async (req, res) => {
+router.get('/sales-channels', handleSalesChannels);
+async function handleSalesChannels(req, res) {
   try {
     const cacheKey = buildDashboardCacheKey(req, 'sales-channels:v3');
     const ttlSeconds = 600; // 10 minutes
@@ -770,9 +772,10 @@ router.get('/sales-channels', async (req, res) => {
     console.error('Error fetching sales channel options:', error);
     return res.status(500).json({ message: 'Failed to fetch sales channel options' });
   }
-});
+}
 
-router.get('/executive-summary', async (req, res) => {
+router.get('/executive-summary', handleExecutiveSummary);
+async function handleExecutiveSummary(req, res) {
   try {
     const cacheKey = buildDashboardCacheKey(req, 'executive-summary:v5');
     const ttlSeconds = 300; // 5 minutes
@@ -1137,13 +1140,10 @@ router.get('/executive-summary', async (req, res) => {
     // Fallback to static executive summary without dynamic date.
     return res.json(executiveSummary);
   }
-});
+}
 
-// Key Performance Metrics (Executive Summary KPI table)
-// - Targets: from `targets` (Year/Month + optional Sales Channel), aligned to the active period month(s)
-// - Actuals: from `revenues`, scoped to the same dateFilterType + sales channel as `/dashboard/revenue`
-//   (including latest-date anchor + T-3 for months, Mongo date clauses for day/week, JS channel fallback)
-router.get('/key-performance-metrics', async (req, res) => {
+router.get('/key-performance-metrics', handleKeyPerformanceMetrics);
+async function handleKeyPerformanceMetrics(req, res) {
   try {
     // Bump cache key because this endpoint has fixed executive KPI semantics
     // and must not serve stale payloads from previous month-anchoring logic.
@@ -1462,7 +1462,8 @@ router.get('/key-performance-metrics', async (req, res) => {
     console.error('Error fetching key performance metrics:', error);
     return res.status(500).json({ message: 'Failed to fetch key performance metrics' });
   }
-});
+}
+
 async function fetchRevenueDashboardPayloadUncached(req) {
     const salesChannelFilter = String(req.query.salesChannel || '').trim();
     const docFilter = buildSalesChannelOrFilter(salesChannelFilter) || {};
@@ -1968,7 +1969,8 @@ router.get('/executive-asin-performance-csv', async (req, res) => {
 
 // Marketing dashboard – pulls data from the `marketings` collection and
 // returns KPI cards + combo chart data (line vs bar) similar to Amazon.
-router.get('/marketing', async (req, res) => {
+router.get('/marketing', handleMarketing);
+async function handleMarketing(req, res) {
   try {
     const cacheKey = buildDashboardCacheKey(req, 'marketing:v4');
     const ttlSeconds = 600; // 10 minutes
@@ -3062,7 +3064,7 @@ router.get('/marketing', async (req, res) => {
     console.error('Error fetching marketing data:', error);
     res.status(500).json({ message: 'Failed to fetch marketing data' });
   }
-});
+}
 
 router.get('/inventory', async (req, res) => {
   try {
@@ -3783,6 +3785,110 @@ router.get('/buybox-last30-sales', async (req, res) => {
   }
 });
 router.get('/product-details', (req, res) => res.json(productDetails));
+
+function pickMarketingBaseFilters(query = {}) {
+  const out = { marketingCacheVersion: query.marketingCacheVersion || '5' };
+  if (query.asin) out.asin = query.asin;
+  if (query.productName) out.productName = query.productName;
+  if (query.productCategory) out.productCategory = query.productCategory;
+  if (query.packSize) out.packSize = query.packSize;
+  if (query.salesChannel) out.salesChannel = query.salesChannel;
+  return out;
+}
+
+async function loadRevenuePayloadCached(req) {
+  const cacheKey = buildDashboardCacheKey(req, 'revenue:v13');
+  const ttlSeconds = 600;
+  const cached = await Cache.get(cacheKey);
+  if (cached) return cached;
+  const payload = await fetchRevenueDashboardPayloadUncached(req);
+  await Cache.set(cacheKey, payload, ttlSeconds);
+  return payload;
+}
+
+// One HTTP round-trip for Executive Summary initial load (replaces 5 parallel client calls).
+router.get('/executive-summary-bundle', async (req, res) => {
+  try {
+    const cacheKey = buildDashboardCacheKey(req, 'executive-summary-bundle:v1');
+    const ttlSeconds = 300;
+    const cached = await Cache.get(cacheKey);
+    if (cached) {
+      res.set('X-Cache', 'HIT');
+      res.set('Cache-Control', `private, max-age=${ttlSeconds}`);
+      return res.json(cached);
+    }
+
+    const salesChannel = String(req.query.salesChannel || '').trim();
+    const dateFilterType = String(req.query.dateFilterType || '').trim();
+    const revenueReq = forkDashboardReq(req, {
+      salesChannel,
+      dateFilterType,
+      includePeriods: '1',
+    });
+    const latestReq = forkDashboardReq(req, {
+      dataset: 'revenue',
+      salesChannel,
+    });
+
+    const [executiveSummaryOut, keyPerformanceMetrics, revenue, latestUpdatedDate, salesChannels] =
+      await Promise.all([
+        runJsonRoute(handleExecutiveSummary, req),
+        runJsonRoute(handleKeyPerformanceMetrics, req),
+        loadRevenuePayloadCached(revenueReq),
+        runJsonRoute(handleLatestUpdatedDate, latestReq),
+        runJsonRoute(handleSalesChannels, req),
+      ]);
+
+    const payload = {
+      executiveSummary: executiveSummaryOut,
+      keyPerformanceMetrics,
+      revenue,
+      latestUpdatedDate,
+      salesChannels,
+    };
+    await Cache.set(cacheKey, payload, ttlSeconds);
+    res.set('X-Cache', 'MISS');
+    res.set('Cache-Control', `private, max-age=${ttlSeconds}`);
+    return res.json(payload);
+  } catch (error) {
+    console.error('Error fetching executive summary bundle:', error);
+    return res.status(500).json({ message: error.message || 'Failed to fetch executive summary bundle' });
+  }
+});
+
+// One HTTP round-trip for Marketing initial load (replaces 3 parallel marketing + latest-date calls).
+router.get('/marketing-bundle', async (req, res) => {
+  try {
+    const cacheKey = buildDashboardCacheKey(req, 'marketing-bundle:v1');
+    const ttlSeconds = 600;
+    const cached = await Cache.get(cacheKey);
+    if (cached) {
+      res.set('X-Cache', 'HIT');
+      res.set('Cache-Control', `private, max-age=${ttlSeconds}`);
+      return res.json(cached);
+    }
+
+    const baseFilters = pickMarketingBaseFilters(req.query);
+    const primaryQuery = { ...req.query, marketingCacheVersion: req.query.marketingCacheVersion || '5' };
+    const channel = String(req.query.salesChannel || req.query.campaignSalesChannel || '').trim();
+
+    const [primary, currentMonth, previousMonth, latestUpdatedDate] = await Promise.all([
+      runJsonRoute(handleMarketing, forkDashboardReq(req, primaryQuery)),
+      runJsonRoute(handleMarketing, forkDashboardReq(req, { ...baseFilters, dateFilterType: 'CURRENT_MONTH' })),
+      runJsonRoute(handleMarketing, forkDashboardReq(req, { ...baseFilters, dateFilterType: 'PREVIOUS_MONTH' })),
+      runJsonRoute(handleLatestUpdatedDate, forkDashboardReq(req, { dataset: 'marketing', salesChannel: channel })),
+    ]);
+
+    const payload = { primary, currentMonth, previousMonth, latestUpdatedDate };
+    await Cache.set(cacheKey, payload, ttlSeconds);
+    res.set('X-Cache', 'MISS');
+    res.set('Cache-Control', `private, max-age=${ttlSeconds}`);
+    return res.json(payload);
+  } catch (error) {
+    console.error('Error fetching marketing bundle:', error);
+    return res.status(500).json({ message: error.message || 'Failed to fetch marketing bundle' });
+  }
+});
 
 // Single endpoint that returns some static sections (optional)
 router.get('/', (req, res) => {

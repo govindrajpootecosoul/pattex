@@ -584,23 +584,16 @@ export default function Marketing() {
       };
     };
 
-    const baseFilterParams = {
-      ...(filters.asin && { asin: filters.asin }),
-      ...(filters.productName && { productName: filters.productName }),
-      ...(filters.productCategory && { productCategory: filters.productCategory }),
-      ...(filters.packSize && { packSize: filters.packSize }),
-      ...(filters.salesChannel && { salesChannel: filters.salesChannel }),
-    };
-
-    Promise.all([
-      dashboardApi.getMarketing(params),
-      dashboardApi.getMarketing({ ...baseFilterParams, dateFilterType: 'CURRENT_MONTH' }),
-      dashboardApi.getMarketing({ ...baseFilterParams, dateFilterType: 'PREVIOUS_MONTH' }),
-    ])
-      .then(([resp, currentMonthResp, previousMonthResp]) => {
+    dashboardApi
+      .getMarketingBundle(params)
+      .then((bundle) => {
+        const resp = bundle?.primary;
+        const currentMonthResp = bundle?.currentMonth;
+        const previousMonthResp = bundle?.previousMonth;
         setData(resp);
         setComparison(resp?.comparison ?? null);
         setHasLoadedOnce(true);
+        setLatestUpdatedAtByChannel(bundle?.latestUpdatedDate?.updatedAt ?? null);
 
         const current = normalizeMarketingTotals(currentMonthResp);
         const previous = normalizeMarketingTotals(previousMonthResp);
@@ -783,22 +776,6 @@ export default function Marketing() {
       tacos: { value: fmt(comparison.tacos?.pctChange), type: type(comparison.tacos?.pctChange) },
     };
   })();
-
-  useEffect(() => {
-    let cancelled = false;
-    const channel = filters.salesChannel ? String(filters.salesChannel).trim() : '';
-    dashboardApi
-      .getLatestUpdatedDate({ dataset: 'marketing', salesChannel: channel })
-      .then((resp) => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(null);
-      });
-    return () => { cancelled = true; };
-  }, [filters.salesChannel]);
 
   const dataUpdatedDate = (latestUpdatedAtByChannel || data?.updatedAt)
     ? formatDateDDMonYY(String(latestUpdatedAtByChannel || data.updatedAt).split('T')[0])

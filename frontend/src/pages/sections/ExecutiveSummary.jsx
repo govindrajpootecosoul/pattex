@@ -74,71 +74,29 @@ export default function ExecutiveSummary() {
     let cancelled = false;
     setLoading(true);
     setError('');
-    dashboardApi
-      .getExecutiveSummary({ salesChannel: salesChannelFilter || '', dateFilterType })
-      .then((payload) => {
-        if (cancelled) return;
-        if (!payload) {
-          setData(null);
-          setError('Executive Summary returned no data.');
-          return;
-        }
-        setData(payload);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(e.message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [salesChannelFilter, dateFilterType]);
-
-  useEffect(() => {
-    let cancelled = false;
-    dashboardApi
-      .getLatestUpdatedDate({ dataset: 'revenue', salesChannel: salesChannelFilter || '' })
-      .then((resp) => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(resp?.updatedAt ?? null);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLatestUpdatedAtByChannel(null);
-      });
-    return () => { cancelled = true; };
-  }, [salesChannelFilter]);
-
-  useEffect(() => {
-    let cancelled = false;
     setKpiLoading(true);
+    setRevenueLoading(true);
     dashboardApi
-      .getKeyPerformanceMetrics({
+      .getExecutiveSummaryBundle({
         salesChannel: salesChannelFilter || '',
         dateFilterType,
       })
-      .then((resp) => {
+      .then((bundle) => {
         if (cancelled) return;
-        setKpiData(resp || null);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setKpiData(null);
-      })
-      .finally(() => {
-        if (!cancelled) setKpiLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [salesChannelFilter, dateFilterType]);
+        const payload = bundle?.executiveSummary;
+        const kpiResp = bundle?.keyPerformanceMetrics;
+        const res = bundle?.revenue;
 
-  useEffect(() => {
-    let cancelled = false;
-    setRevenueLoading(true);
-    dashboardApi
-      .getRevenue({ dateFilterType, includePeriods: true, salesChannel: salesChannelFilter || '' })
-      .then((res) => {
-        if (cancelled) return;
+        if (!payload) {
+          setData(null);
+          setError('Executive Summary returned no data.');
+        } else {
+          setData(payload);
+        }
+
+        setKpiData(kpiResp || null);
+        setLatestUpdatedAtByChannel(bundle?.latestUpdatedDate?.updatedAt ?? null);
+
         setRevenueRows(Array.isArray(res?.currentRows) ? res.currentRows : []);
         setPrevRevenueRows(Array.isArray(res?.comparisonRows) ? res.comparisonRows : []);
         if (res?.periodLabels?.currentLabel && res?.periodLabels?.comparisonLabel) {
@@ -160,17 +118,21 @@ export default function ExecutiveSummary() {
           setPeriodLabels({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
         }
       })
-      .catch(() => {
+      .catch((e) => {
         if (cancelled) return;
+        setError(e.message);
+        setKpiData(null);
         setRevenueRows([]);
         setPrevRevenueRows([]);
-        setPeriodLabels({ currentLabel: 'Current Month', previousLabel: 'Previous Month' });
       })
       .finally(() => {
-        if (!cancelled) setRevenueLoading(false);
+        if (cancelled) return;
+        setLoading(false);
+        setKpiLoading(false);
+        setRevenueLoading(false);
       });
     return () => { cancelled = true; };
-  }, [dateFilterType, salesChannelFilter]);
+  }, [salesChannelFilter, dateFilterType]);
 
   // Hooks must run consistently across renders.
   // Compute table rows even during loading (safe defaults).

@@ -29,6 +29,7 @@
 ## Run
 - Backend: `cd backend && npm install && npm run dev` → http://localhost:3026
 - Frontend: `cd frontend && npm install && npm run dev` → http://localhost:3027 (proxies /api to backend)
+- **API logging**: backend terminal prints every request as `[#seq HH:mm:ss.SSS] METHOD /api/... → status durationms [tenant: ...]`. Same timestamp / close sequence numbers = frontend fired multiple APIs at once (e.g. opening Executive Summary).
 
 ## API
 - `POST /api/auth/signup` – body: { name, email, phone, password, databaseName }

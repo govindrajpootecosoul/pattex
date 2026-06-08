@@ -1,31 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { dashboardApi } from '../api/api';
+import { useMemo } from 'react';
+import { useSalesChannelsContext } from '../context/SalesChannelsContext.jsx';
 
-/**
- * Fetches an unfiltered, stable list of Sales Channels for dropdowns.
- * Keeps the list stable across screen filters so options never disappear.
- */
+/** Shared sales-channel list (loaded once in Dashboard via SalesChannelsProvider). */
 export function useSalesChannels() {
-  const [options, setOptions] = useState([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    dashboardApi
-      .getSalesChannels()
-      .then((resp) => {
-        if (cancelled) return;
-        const list = Array.isArray(resp?.options) ? resp.options : [];
-        setOptions(list);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // Keep whatever we already have
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  const { options } = useSalesChannelsContext();
   return useMemo(() => (Array.isArray(options) ? options : []), [options]);
 }
 
+export function useSalesChannelsReady() {
+  const { ready } = useSalesChannelsContext();
+  return ready;
+}
