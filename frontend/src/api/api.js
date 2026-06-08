@@ -1,6 +1,26 @@
 import { isCancelledError } from '@tanstack/react-query';
 import { queryClient } from '../queryClient.js';
 
+/** Registered by AuthContext — called once when any API returns 401 with a stored token. */
+let onUnauthorized = null;
+let unauthorizedHandled = false;
+
+export function setUnauthorizedHandler(handler) {
+  onUnauthorized = typeof handler === 'function' ? handler : null;
+  if (!onUnauthorized) unauthorizedHandled = false;
+}
+
+/** Call after a fresh login so a prior 401 does not block future session expiry handling. */
+export function resetUnauthorizedState() {
+  unauthorizedHandled = false;
+}
+
+function triggerUnauthorized() {
+  if (unauthorizedHandled || !onUnauthorized) return;
+  unauthorizedHandled = true;
+  onUnauthorized();
+}
+
 function normalizeBaseUrl(raw) {
   if (!raw) return '';
   let base = String(raw).trim().replace(/\/+$/, '');
@@ -83,6 +103,10 @@ async function request(path, options = {}) {
     }
 
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && token) {
+      triggerUnauthorized();
+      throw new Error(data.message || 'Session expired. Please sign in again.');
+    }
     if (!res.ok) throw new Error(data.message || res.statusText || 'Request failed');
     return data;
   };
@@ -182,6 +206,10 @@ export const dashboardApi = {
     }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401 && token) {
+        triggerUnauthorized();
+        throw new Error(data.message || 'Session expired. Please sign in again.');
+      }
       throw new Error(data.message || res.statusText || 'CSV download failed');
     }
     return res.blob();

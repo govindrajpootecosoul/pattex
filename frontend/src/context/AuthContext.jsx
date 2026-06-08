@@ -1,32 +1,74 @@
-import { createContext, useContext, useState, useEffect } from 'react';
-import { authApi } from '../api/api';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { authApi, setUnauthorizedHandler, resetUnauthorizedState } from '../api/api';
 import { queryClient } from '../queryClient.js';
 import { PATTEX_UI_STORAGE_KEYS } from '../constants/logoutStorageKeys.js';
+import { isTokenExpired } from '../utils/jwt.js';
 
 const AuthContext = createContext(null);
 
 const TOKEN_KEY = 'pattex_token';
 const USER_KEY = 'pattex_user';
 
+function clearLocalAuthState(setUserFn) {
+  for (const key of PATTEX_UI_STORAGE_KEYS) {
+    try {
+      localStorage.removeItem(key);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  setUserFn(null);
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const logout = useCallback(async () => {
+    // Cancel in-flight GETs first so nothing repopulates React Query after clear().
+    // Then clear cache before server logout so we are not blocked on Redis SCAN while stale data could win races.
+    await queryClient.cancelQueries();
+    queryClient.clear();
+    try {
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (token && !isTokenExpired(token)) {
+        await authApi.logout();
+      }
+    } catch (_) {
+      // Still clear client state if the server is down or the token expired.
+    }
+    clearLocalAuthState(setUser);
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem(TOKEN_KEY);
     const saved = localStorage.getItem(USER_KEY);
     if (token && saved) {
-      try {
-        setUser(JSON.parse(saved));
-      } catch (_) {
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
+      if (isTokenExpired(token)) {
+        clearLocalAuthState(setUser);
+      } else {
+        try {
+          setUser(JSON.parse(saved));
+        } catch (_) {
+          clearLocalAuthState(setUser);
+        }
       }
     }
     setLoading(false);
   }, []);
 
+  // Log out on any 401 from the API (expired or revoked token).
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      logout();
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [logout]);
+
   const login = (userData, token) => {
+    resetUnauthorizedState();
     localStorage.setItem(TOKEN_KEY, token);
     localStorage.setItem(USER_KEY, JSON.stringify(userData));
     setUser(userData);
@@ -34,30 +76,6 @@ export function AuthProvider({ children }) {
 
   const signup = (userData, token) => {
     login(userData, token);
-  };
-
-  const logout = async () => {
-    // Cancel in-flight GETs first so nothing repopulates React Query after clear().
-    // Then clear cache before server logout so we are not blocked on Redis SCAN while stale data could win races.
-    await queryClient.cancelQueries();
-    queryClient.clear();
-    try {
-      if (localStorage.getItem(TOKEN_KEY)) {
-        await authApi.logout();
-      }
-    } catch (_) {
-      // Still clear client state if the server is down or the token expired.
-    }
-    for (const key of PATTEX_UI_STORAGE_KEYS) {
-      try {
-        localStorage.removeItem(key);
-      } catch (_) {
-        /* ignore quota / private mode */
-      }
-    }
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    setUser(null);
   };
 
   const getToken = () => localStorage.getItem(TOKEN_KEY);

@@ -11,7 +11,7 @@
 
 ## Auth
 - **Signup**: name, email, phone, password (min 6 chars), **databaseName** (company DB name, e.g. pattex, emami). Password hashed with bcrypt. Stored in maindb.
-- **Login**: email + password. Returns JWT (7-day expiry) and **databaseName**. Frontend stores user (including databaseName) and token.
+- **Login**: email + password. Returns JWT (**30-day** expiry, configurable via `JWT_EXPIRES_IN`) and **databaseName**. Frontend stores user (including databaseName) and token; auto-logout on app load if token expired, or when any API returns 401.
 - Dashboard requests use the user’s databaseName to load data from that company’s database (same collection names: revenues, inventories, marketings, buyboxes).
 - Frontend shows the company/database name in the dashboard (sidebar badge).
 

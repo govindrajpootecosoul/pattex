@@ -3,11 +3,12 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { protect } from '../middleware/auth.js';
 import Cache from '../utils/cache.js';
+import { JWT_EXPIRES_IN } from '../config/auth.js';
 
 const router = express.Router();
 
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 };
 
 // POST /api/auth/signup
